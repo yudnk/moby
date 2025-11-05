@@ -9,7 +9,6 @@ import (
 	"github.com/moby/moby/v2/daemon/libnetwork/datastore"
 	"github.com/moby/moby/v2/daemon/libnetwork/driverapi"
 	"github.com/moby/moby/v2/daemon/libnetwork/scope"
-	"github.com/moby/moby/v2/daemon/libnetwork/types"
 )
 
 const (
@@ -31,15 +30,12 @@ const (
 	flagVepa    = "vepa"    // ipvlan flag vepa
 )
 
-type endpointTable map[string]*endpoint
-
-type networkTable map[string]*network
-
 type driver struct {
-	networks networkTable
-	sync.Once
-	sync.Mutex
 	store *datastore.Store
+
+	// mu protects the networks map.
+	mu       sync.Mutex
+	networks map[string]*network
 }
 
 type endpoint struct {
@@ -54,18 +50,20 @@ type endpoint struct {
 }
 
 type network struct {
-	id        string
-	endpoints endpointTable
-	driver    *driver
-	config    *configuration
-	sync.Mutex
+	id     string
+	driver *driver
+	config *configuration
+
+	// mu protects the endpoints map.
+	mu        sync.Mutex
+	endpoints map[string]*endpoint
 }
 
 // Register initializes and registers the libnetwork ipvlan driver.
-func Register(r driverapi.Registerer, store *datastore.Store, config map[string]any) error {
+func Register(r driverapi.Registerer, store *datastore.Store) error {
 	d := &driver{
 		store:    store,
-		networks: networkTable{},
+		networks: map[string]*network{},
 	}
 	if err := d.initStore(); err != nil {
 		return err
@@ -74,14 +72,6 @@ func Register(r driverapi.Registerer, store *datastore.Store, config map[string]
 		DataScope:         scope.Local,
 		ConnectivityScope: scope.Global,
 	})
-}
-
-func (d *driver) NetworkAllocate(id string, option map[string]string, ipV4Data, ipV6Data []driverapi.IPAMData) (map[string]string, error) {
-	return nil, types.NotImplementedErrorf("not implemented")
-}
-
-func (d *driver) NetworkFree(id string) error {
-	return types.NotImplementedErrorf("not implemented")
 }
 
 func (d *driver) EndpointOperInfo(nid, eid string) (map[string]any, error) {

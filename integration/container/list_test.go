@@ -7,12 +7,11 @@ import (
 	"time"
 
 	containertypes "github.com/moby/moby/api/types/container"
-	"github.com/moby/moby/api/types/filters"
-	"github.com/moby/moby/api/types/versions"
 	"github.com/moby/moby/client"
+	"github.com/moby/moby/client/pkg/versions"
 	"github.com/moby/moby/v2/integration/internal/container"
-	"github.com/moby/moby/v2/testutil"
-	"github.com/moby/moby/v2/testutil/request"
+	"github.com/moby/moby/v2/internal/testutil"
+	"github.com/moby/moby/v2/internal/testutil/request"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 	"gotest.tools/v3/poll"
@@ -31,17 +30,17 @@ func TestContainerList(t *testing.T) {
 	containers := make([]string, num)
 	for i := range num {
 		id := container.Create(ctx, t, apiClient)
-		defer container.Remove(ctx, t, apiClient, id, containertypes.RemoveOptions{Force: true})
+		defer container.Remove(ctx, t, apiClient, id, client.ContainerRemoveOptions{Force: true})
 		containers[i] = id
 	}
 
 	// list them and verify correctness
-	containerList, err := apiClient.ContainerList(ctx, containertypes.ListOptions{All: true})
+	list, err := apiClient.ContainerList(ctx, client.ContainerListOptions{All: true})
 	assert.NilError(t, err)
-	assert.Assert(t, is.Len(containerList, num))
+	assert.Assert(t, is.Len(list.Items, num))
 	for i := range num {
 		// container list should be ordered in descending creation order
-		assert.Assert(t, is.Equal(containerList[i].ID, containers[num-1-i]))
+		assert.Assert(t, is.Equal(list.Items[i].ID, containers[num-1-i]))
 	}
 }
 
@@ -64,16 +63,16 @@ func TestContainerList_Annotations(t *testing.T) {
 		t.Run(fmt.Sprintf("run with version v%s", tc.apiVersion), func(t *testing.T) {
 			apiClient := request.NewAPIClient(t, client.WithVersion(tc.apiVersion))
 			id := container.Create(ctx, t, apiClient, container.WithAnnotations(annotations))
-			defer container.Remove(ctx, t, apiClient, id, containertypes.RemoveOptions{Force: true})
+			defer container.Remove(ctx, t, apiClient, id, client.ContainerRemoveOptions{Force: true})
 
-			containers, err := apiClient.ContainerList(ctx, containertypes.ListOptions{
+			list, err := apiClient.ContainerList(ctx, client.ContainerListOptions{
 				All:     true,
-				Filters: filters.NewArgs(filters.Arg("id", id)),
+				Filters: make(client.Filters).Add("id", id),
 			})
 			assert.NilError(t, err)
-			assert.Assert(t, is.Len(containers, 1))
-			assert.Equal(t, containers[0].ID, id)
-			assert.Check(t, is.DeepEqual(containers[0].HostConfig.Annotations, tc.expectedAnnotations))
+			assert.Assert(t, is.Len(list.Items, 1))
+			assert.Equal(t, list.Items[0].ID, id)
+			assert.Check(t, is.DeepEqual(list.Items[0].HostConfig.Annotations, tc.expectedAnnotations))
 		})
 	}
 }
@@ -87,9 +86,9 @@ func TestContainerList_Filter(t *testing.T) {
 	next := container.Create(ctx, t, apiClient)
 
 	defer func() {
-		container.Remove(ctx, t, apiClient, prev, containertypes.RemoveOptions{Force: true})
-		container.Remove(ctx, t, apiClient, top, containertypes.RemoveOptions{Force: true})
-		container.Remove(ctx, t, apiClient, next, containertypes.RemoveOptions{Force: true})
+		container.Remove(ctx, t, apiClient, prev, client.ContainerRemoveOptions{Force: true})
+		container.Remove(ctx, t, apiClient, top, client.ContainerRemoveOptions{Force: true})
+		container.Remove(ctx, t, apiClient, next, client.ContainerRemoveOptions{Force: true})
 	}()
 
 	containerIDs := func(containers []containertypes.Summary) []string {
@@ -102,22 +101,22 @@ func TestContainerList_Filter(t *testing.T) {
 
 	t.Run("since", func(t *testing.T) {
 		ctx := testutil.StartSpan(ctx, t)
-		results, err := apiClient.ContainerList(ctx, containertypes.ListOptions{
+		list, err := apiClient.ContainerList(ctx, client.ContainerListOptions{
 			All:     true,
-			Filters: filters.NewArgs(filters.Arg("since", top)),
+			Filters: make(client.Filters).Add("since", top),
 		})
 		assert.NilError(t, err)
-		assert.Check(t, is.Contains(containerIDs(results), next))
+		assert.Check(t, is.Contains(containerIDs(list.Items), next))
 	})
 
 	t.Run("before", func(t *testing.T) {
 		ctx := testutil.StartSpan(ctx, t)
-		results, err := apiClient.ContainerList(ctx, containertypes.ListOptions{
+		list, err := apiClient.ContainerList(ctx, client.ContainerListOptions{
 			All:     true,
-			Filters: filters.NewArgs(filters.Arg("before", top)),
+			Filters: make(client.Filters).Add("before", top),
 		})
 		assert.NilError(t, err)
-		assert.Check(t, is.Contains(containerIDs(results), prev))
+		assert.Check(t, is.Contains(containerIDs(list.Items), prev))
 	})
 }
 
@@ -131,15 +130,15 @@ func TestContainerList_ImageManifestPlatform(t *testing.T) {
 	apiClient := testEnv.APIClient()
 
 	id := container.Create(ctx, t, apiClient)
-	defer container.Remove(ctx, t, apiClient, id, containertypes.RemoveOptions{Force: true})
+	defer container.Remove(ctx, t, apiClient, id, client.ContainerRemoveOptions{Force: true})
 
-	containers, err := apiClient.ContainerList(ctx, containertypes.ListOptions{
+	list, err := apiClient.ContainerList(ctx, client.ContainerListOptions{
 		All: true,
 	})
 	assert.NilError(t, err)
-	assert.Assert(t, len(containers) > 0)
+	assert.Assert(t, len(list.Items) > 0)
 
-	ctr := containers[0]
+	ctr := list.Items[0]
 	if assert.Check(t, ctr.ImageManifestDescriptor != nil && ctr.ImageManifestDescriptor.Platform != nil) {
 		// Check that at least OS and Architecture have a value. Other values
 		// depend on the platform on which we're running the test.
@@ -148,18 +147,18 @@ func TestContainerList_ImageManifestPlatform(t *testing.T) {
 	}
 }
 
-func pollForHealthStatusSummary(ctx context.Context, client client.APIClient, containerID string, healthStatus containertypes.HealthStatus) func(log poll.LogT) poll.Result {
+func pollForHealthStatusSummary(ctx context.Context, apiClient client.APIClient, containerID string, healthStatus containertypes.HealthStatus) func(log poll.LogT) poll.Result {
 	return func(log poll.LogT) poll.Result {
-		containers, err := client.ContainerList(ctx, containertypes.ListOptions{
+		list, err := apiClient.ContainerList(ctx, client.ContainerListOptions{
 			All:     true,
-			Filters: filters.NewArgs(filters.Arg("id", containerID)),
+			Filters: make(client.Filters).Add("id", containerID),
 		})
 		if err != nil {
 			return poll.Error(err)
 		}
 		total := 0
-		version := client.ClientVersion()
-		for _, ctr := range containers {
+		version := apiClient.ClientVersion()
+		for _, ctr := range list.Items {
 			if ctr.Health == nil && versions.LessThan(version, "1.52") {
 				total++
 			} else if ctr.Health != nil && ctr.Health.Status == healthStatus && versions.GreaterThanOrEqualTo(version, "1.52") {
@@ -167,7 +166,7 @@ func pollForHealthStatusSummary(ctx context.Context, client client.APIClient, co
 			}
 		}
 
-		if total == len(containers) {
+		if total == len(list.Items) {
 			return poll.Success()
 		}
 

@@ -5,11 +5,11 @@ import (
 	"io"
 
 	"github.com/distribution/reference"
-	"github.com/moby/moby/api/types/filters"
 	"github.com/moby/moby/api/types/image"
 	"github.com/moby/moby/api/types/registry"
+	"github.com/moby/moby/v2/daemon/internal/filters"
 	dockerimage "github.com/moby/moby/v2/daemon/internal/image"
-	"github.com/moby/moby/v2/daemon/server/backend"
+	"github.com/moby/moby/v2/daemon/server/imagebackend"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
@@ -22,11 +22,11 @@ type Backend interface {
 }
 
 type imageBackend interface {
-	ImageDelete(ctx context.Context, imageRef string, options image.RemoveOptions) ([]image.DeleteResponse, error)
+	ImageDelete(ctx context.Context, imageRef string, options imagebackend.RemoveOptions) ([]image.DeleteResponse, error)
 	ImageHistory(ctx context.Context, imageName string, platform *ocispec.Platform) ([]*image.HistoryResponseItem, error)
-	Images(ctx context.Context, opts image.ListOptions) ([]*image.Summary, error)
-	GetImage(ctx context.Context, refOrID string, options backend.GetImageOpts) (*dockerimage.Image, error)
-	ImageInspect(ctx context.Context, refOrID string, options backend.ImageInspectOpts) (*image.InspectResponse, error)
+	Images(ctx context.Context, opts imagebackend.ListOptions) ([]*image.Summary, error)
+	GetImage(ctx context.Context, refOrID string, options imagebackend.GetImageOpts) (*dockerimage.Image, error)
+	ImageInspect(ctx context.Context, refOrID string, options imagebackend.ImageInspectOpts) (*imagebackend.InspectData, error)
 	TagImage(ctx context.Context, id dockerimage.ID, newRef reference.Named) error
 	ImagesPrune(ctx context.Context, pruneFilters filters.Args) (*image.PruneReport, error)
 }
@@ -38,8 +38,8 @@ type importExportBackend interface {
 }
 
 type registryBackend interface {
-	PullImage(ctx context.Context, ref reference.Named, platform *ocispec.Platform, metaHeaders map[string][]string, authConfig *registry.AuthConfig, outStream io.Writer) error
-	PushImage(ctx context.Context, ref reference.Named, platform *ocispec.Platform, metaHeaders map[string][]string, authConfig *registry.AuthConfig, outStream io.Writer) error
+	PullImage(ctx context.Context, ref reference.Named, options imagebackend.PullOptions) error
+	PushImage(ctx context.Context, ref reference.Named, options imagebackend.PushOptions) error
 }
 
 type Searcher interface {

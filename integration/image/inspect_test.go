@@ -5,10 +5,9 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/moby/moby/api/types/image"
 	"github.com/moby/moby/client"
 	iimage "github.com/moby/moby/v2/integration/internal/image"
-	"github.com/moby/moby/v2/internal/testutils/specialimage"
+	"github.com/moby/moby/v2/internal/testutil/specialimage"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
@@ -52,10 +51,10 @@ func TestImageInspectUniqueRepoDigests(t *testing.T) {
 
 	for _, tag := range []string{"master", "newest"} {
 		imgName := "busybox:" + tag
-		err := apiClient.ImageTag(ctx, "busybox", imgName)
+		_, err := apiClient.ImageTag(ctx, client.ImageTagOptions{Source: "busybox", Target: imgName})
 		assert.NilError(t, err)
 		defer func() {
-			_, _ = apiClient.ImageRemove(ctx, imgName, image.RemoveOptions{Force: true})
+			_, _ = apiClient.ImageRemove(ctx, imgName, client.ImageRemoveOptions{Force: true})
 		}()
 	}
 

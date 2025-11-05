@@ -1,20 +1,19 @@
 package dockerfile
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"runtime"
 	"testing"
 
 	"github.com/moby/go-archive"
-	"github.com/moby/moby/api/types/build"
 	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/v2/daemon/builder"
 	"github.com/moby/moby/v2/daemon/builder/remotecontext"
 	"github.com/moby/moby/v2/daemon/internal/image"
 	"github.com/moby/moby/v2/daemon/internal/layer"
-	"github.com/moby/moby/v2/daemon/server/backend"
+	"github.com/moby/moby/v2/daemon/server/buildbackend"
 	"github.com/opencontainers/go-digest"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
@@ -75,8 +74,8 @@ func readAndCheckDockerfile(t *testing.T, testName, contextDir, dockerfilePath, 
 		dockerfilePath = builder.DefaultDockerfileName
 	}
 
-	config := backend.BuildConfig{
-		Options: &build.ImageBuildOptions{Dockerfile: dockerfilePath},
+	config := buildbackend.BuildConfig{
+		Options: &buildbackend.BuildOptions{Dockerfile: dockerfilePath},
 		Source:  tarStream,
 	}
 	_, _, err = remotecontext.Detect(config)
@@ -137,9 +136,9 @@ func fullMutableRunConfig() *container.Config {
 	return &container.Config{
 		Cmd: []string{"command", "arg1"},
 		Env: []string{"env1=foo", "env2=bar"},
-		ExposedPorts: container.PortSet{
-			"1000/tcp": {},
-			"1001/tcp": {},
+		ExposedPorts: network.PortSet{
+			network.MustParsePort("1000/tcp"): {},
+			network.MustParsePort("1001/tcp"): {},
 		},
 		Volumes: map[string]struct{}{
 			"one": {},
@@ -162,7 +161,7 @@ func TestDeepCopyRunConfig(t *testing.T) {
 
 	ctrCfg.Cmd[1] = "arg2"
 	ctrCfg.Env[1] = "env2=new"
-	ctrCfg.ExposedPorts["10002"] = struct{}{}
+	ctrCfg.ExposedPorts[network.MustParsePort("10002")] = struct{}{}
 	ctrCfg.Volumes["three"] = struct{}{}
 	ctrCfg.Entrypoint[1] = "arg2"
 	ctrCfg.OnBuild[0] = "start"
@@ -207,6 +206,6 @@ func TestExportImage(t *testing.T) {
 		imageSources: getMockImageSource(nil, nil, nil),
 		docker:       getMockBuildBackend(),
 	}
-	err := b.exportImage(context.TODO(), ds, &MockRWLayer{}, parentImage, &container.Config{})
+	err := b.exportImage(t.Context(), ds, &MockRWLayer{}, parentImage, &container.Config{})
 	assert.NilError(t, err)
 }

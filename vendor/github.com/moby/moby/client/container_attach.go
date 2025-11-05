@@ -4,9 +4,22 @@ import (
 	"context"
 	"net/http"
 	"net/url"
-
-	"github.com/moby/moby/api/types/container"
 )
+
+// ContainerAttachOptions holds parameters to attach to a container.
+type ContainerAttachOptions struct {
+	Stream     bool
+	Stdin      bool
+	Stdout     bool
+	Stderr     bool
+	DetachKeys string
+	Logs       bool
+}
+
+// ContainerAttachResult is the result from attaching to a container.
+type ContainerAttachResult struct {
+	HijackedResponse
+}
 
 // ContainerAttach attaches a connection to a container in the server.
 // It returns a [HijackedResponse] with the hijacked connection
@@ -36,10 +49,10 @@ import (
 // [stdcopy.StdType]: https://pkg.go.dev/github.com/moby/moby/api/pkg/stdcopy#StdType
 // [Stdout]: https://pkg.go.dev/github.com/moby/moby/api/pkg/stdcopy#Stdout
 // [Stderr]: https://pkg.go.dev/github.com/moby/moby/api/pkg/stdcopy#Stderr
-func (cli *Client) ContainerAttach(ctx context.Context, containerID string, options container.AttachOptions) (HijackedResponse, error) {
+func (cli *Client) ContainerAttach(ctx context.Context, containerID string, options ContainerAttachOptions) (ContainerAttachResult, error) {
 	containerID, err := trimID("container", containerID)
 	if err != nil {
-		return HijackedResponse{}, err
+		return ContainerAttachResult{}, err
 	}
 
 	query := url.Values{}
@@ -62,7 +75,12 @@ func (cli *Client) ContainerAttach(ctx context.Context, containerID string, opti
 		query.Set("logs", "1")
 	}
 
-	return cli.postHijacked(ctx, "/containers/"+containerID+"/attach", query, nil, http.Header{
+	hijacked, err := cli.postHijacked(ctx, "/containers/"+containerID+"/attach", query, nil, http.Header{
 		"Content-Type": {"text/plain"},
 	})
+	if err != nil {
+		return ContainerAttachResult{}, err
+	}
+
+	return ContainerAttachResult{HijackedResponse: hijacked}, nil
 }

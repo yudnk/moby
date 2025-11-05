@@ -12,11 +12,11 @@ import (
 
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/moby/moby/api/types/common"
-	containertypes "github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/client"
 	"github.com/moby/moby/v2/integration/internal/build"
 	"github.com/moby/moby/v2/integration/internal/container"
-	"github.com/moby/moby/v2/testutil/fakecontext"
-	req "github.com/moby/moby/v2/testutil/request"
+	"github.com/moby/moby/v2/internal/testutil/fakecontext"
+	req "github.com/moby/moby/v2/internal/testutil/request"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 	"gotest.tools/v3/skip"
@@ -33,14 +33,14 @@ func TestExecWithCloseStdin(t *testing.T) {
 	cID := container.Run(ctx, t, apiClient)
 
 	const expected = "closeIO"
-	execResp, err := apiClient.ContainerExecCreate(ctx, cID, containertypes.ExecOptions{
+	res, err := apiClient.ExecCreate(ctx, cID, client.ExecCreateOptions{
 		AttachStdin:  true,
 		AttachStdout: true,
 		Cmd:          []string{"sh", "-c", "cat && echo " + expected},
 	})
 	assert.NilError(t, err)
 
-	resp, err := apiClient.ContainerExecAttach(ctx, execResp.ID, containertypes.ExecAttachOptions{})
+	resp, err := apiClient.ExecAttach(ctx, res.ID, client.ExecAttachOptions{})
 	assert.NilError(t, err)
 	defer resp.Close()
 
@@ -88,7 +88,7 @@ func TestExec(t *testing.T) {
 
 	cID := container.Run(ctx, t, apiClient, container.WithTty(true), container.WithWorkingDir("/root"))
 
-	id, err := apiClient.ContainerExecCreate(ctx, cID, containertypes.ExecOptions{
+	res, err := apiClient.ExecCreate(ctx, cID, client.ExecCreateOptions{
 		WorkingDir:   "/tmp",
 		Env:          []string{"FOO=BAR"},
 		AttachStdout: true,
@@ -96,11 +96,11 @@ func TestExec(t *testing.T) {
 	})
 	assert.NilError(t, err)
 
-	inspect, err := apiClient.ContainerExecInspect(ctx, id.ID)
+	inspect, err := apiClient.ExecInspect(ctx, res.ID, client.ExecInspectOptions{})
 	assert.NilError(t, err)
-	assert.Check(t, is.Equal(inspect.ExecID, id.ID))
+	assert.Check(t, is.Equal(inspect.ID, res.ID))
 
-	resp, err := apiClient.ContainerExecAttach(ctx, id.ID, containertypes.ExecAttachOptions{})
+	resp, err := apiClient.ExecAttach(ctx, res.ID, client.ExecAttachOptions{})
 	assert.NilError(t, err)
 	defer resp.Close()
 	r, err := io.ReadAll(resp.Reader)
@@ -120,24 +120,26 @@ func TestExecResize(t *testing.T) {
 	apiClient := testEnv.APIClient()
 
 	cID := container.Run(ctx, t, apiClient, container.WithTty(true))
-	defer container.Remove(ctx, t, apiClient, cID, containertypes.RemoveOptions{Force: true})
+	defer container.Remove(ctx, t, apiClient, cID, client.ContainerRemoveOptions{Force: true})
 
 	cmd := []string{"top"}
 	if runtime.GOOS == "windows" {
 		cmd = []string{"sleep", "240"}
 	}
-	resp, err := apiClient.ContainerExecCreate(ctx, cID, containertypes.ExecOptions{
+	res, err := apiClient.ExecCreate(ctx, cID, client.ExecCreateOptions{
 		Tty: true, // Windows requires a TTY for the resize to work, otherwise fails with "is not a tty: failed precondition", see https://github.com/moby/moby/pull/48665#issuecomment-2412530345
 		Cmd: cmd,
 	})
 	assert.NilError(t, err)
-	execID := resp.ID
+	execID := res.ID
 	assert.NilError(t, err)
-	err = apiClient.ContainerExecStart(ctx, execID, containertypes.ExecStartOptions{Detach: true})
+	_, err = apiClient.ExecStart(ctx, execID, client.ExecStartOptions{
+		Detach: true,
+	})
 	assert.NilError(t, err)
 
 	t.Run("success", func(t *testing.T) {
-		err := apiClient.ContainerExecResize(ctx, execID, containertypes.ResizeOptions{
+		_, err := apiClient.ExecResize(ctx, execID, client.ExecResizeOptions{
 			Height: 40,
 			Width:  40,
 		})
@@ -246,7 +248,7 @@ func TestExecResize(t *testing.T) {
 	})
 
 	t.Run("unknown execID", func(t *testing.T) {
-		err = apiClient.ContainerExecResize(ctx, "no-such-exec-id", containertypes.ResizeOptions{
+		_, err = apiClient.ExecResize(ctx, "no-such-exec-id", client.ExecResizeOptions{
 			Height: 40,
 			Width:  40,
 		})
@@ -271,10 +273,10 @@ func TestExecResize(t *testing.T) {
 		//          Error response from daemon: No such exec instance: cc728a332d3f594249fb7ee9adb3bb12a59a5d1776f8f6dedc56355364361711
 		skip.If(t, testEnv.DaemonInfo.OSType == "windows" && !testEnv.RuntimeIsWindowsContainerd(), "FIXME. Windows + builtin returns a NotFound instead of a Conflict error")
 
-		err := apiClient.ContainerKill(ctx, cID, "SIGKILL")
+		_, err := apiClient.ContainerKill(ctx, cID, client.ContainerKillOptions{})
 		assert.NilError(t, err)
 
-		err = apiClient.ContainerExecResize(ctx, execID, containertypes.ResizeOptions{
+		_, err = apiClient.ExecResize(ctx, execID, client.ExecResizeOptions{
 			Height: 40,
 			Width:  40,
 		})
@@ -295,8 +297,8 @@ func TestExecUser(t *testing.T) {
 	withoutEtcGroups := container.WithImage(build.Do(ctx, t, apiClient, fakecontext.New(t, "", fakecontext.WithDockerfile("FROM busybox\nRUN rm /etc/group"))))
 	withoutEtcPasswd := container.WithImage(build.Do(ctx, t, apiClient, fakecontext.New(t, "", fakecontext.WithDockerfile("FROM busybox\nRUN rm /etc/passwd"))))
 
-	withUser := func(user string) func(options *containertypes.ExecOptions) {
-		return func(options *containertypes.ExecOptions) { options.User = user }
+	withUser := func(user string) func(options *client.ExecCreateOptions) {
+		return func(options *client.ExecCreateOptions) { options.User = user }
 	}
 
 	tests := []struct {

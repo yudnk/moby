@@ -4,6 +4,7 @@ import (
 	"time"
 
 	dockerspec "github.com/moby/docker-image-spec/specs-go/v1"
+	"github.com/moby/moby/api/types/network"
 )
 
 // MinimumDuration puts a minimum on user configured duration.
@@ -11,24 +12,6 @@ import (
 // set 3 as healthcheck interval with intention of 3 seconds, but
 // Docker interprets it as 3 nanoseconds.
 const MinimumDuration = 1 * time.Millisecond
-
-// StopOptions holds the options to stop or restart a container.
-type StopOptions struct {
-	// Signal (optional) is the signal to send to the container to (gracefully)
-	// stop it before forcibly terminating the container with SIGKILL after the
-	// timeout expires. If not value is set, the default (SIGTERM) is used.
-	Signal string `json:",omitempty"`
-
-	// Timeout (optional) is the timeout (in seconds) to wait for the container
-	// to stop gracefully before forcibly terminating it with SIGKILL.
-	//
-	// - Use nil to use the default timeout (10 seconds).
-	// - Use '-1' to wait indefinitely.
-	// - Use '0' to not wait for the container to exit gracefully, and
-	//   immediately proceeds to forcibly terminating the container.
-	// - Other positive values are used as timeout (in seconds).
-	Timeout *int `json:",omitempty"`
-}
 
 // HealthConfig holds configuration settings for the HEALTHCHECK feature.
 type HealthConfig = dockerspec.HealthcheckConfig
@@ -46,7 +29,7 @@ type Config struct {
 	AttachStdin     bool                // Attach the standard input, makes possible user interaction
 	AttachStdout    bool                // Attach the standard output
 	AttachStderr    bool                // Attach the standard error
-	ExposedPorts    PortSet             `json:",omitempty"` // List of exposed ports
+	ExposedPorts    network.PortSet     `json:",omitempty"` // List of exposed ports
 	Tty             bool                // Attach standard streams to a tty, including stdin if it is not closed.
 	OpenStdin       bool                // Open stdin
 	StdinOnce       bool                // If true, close stdin after the 1 attached client disconnects.
@@ -59,13 +42,9 @@ type Config struct {
 	WorkingDir      string              // Current directory (PWD) in the command will be launched
 	Entrypoint      []string            // Entrypoint to run when starting the container
 	NetworkDisabled bool                `json:",omitempty"` // Is network disabled
-	// Mac Address of the container.
-	//
-	// Deprecated: this field is deprecated since API v1.44. Use EndpointSettings.MacAddress instead.
-	MacAddress  string            `json:",omitempty"`
-	OnBuild     []string          // ONBUILD metadata that were defined on the image Dockerfile
-	Labels      map[string]string // List of labels set to this container
-	StopSignal  string            `json:",omitempty"` // Signal to stop a container
-	StopTimeout *int              `json:",omitempty"` // Timeout (in seconds) to stop a container
-	Shell       []string          `json:",omitempty"` // Shell for shell-form of RUN, CMD, ENTRYPOINT
+	OnBuild         []string            `json:",omitempty"` // ONBUILD metadata that were defined on the image Dockerfile
+	Labels          map[string]string   // List of labels set to this container
+	StopSignal      string              `json:",omitempty"` // Signal to stop a container
+	StopTimeout     *int                `json:",omitempty"` // Timeout (in seconds) to stop a container
+	Shell           []string            `json:",omitempty"` // Shell for shell-form of RUN, CMD, ENTRYPOINT
 }

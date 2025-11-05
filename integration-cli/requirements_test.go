@@ -16,11 +16,9 @@ import (
 	"time"
 
 	"github.com/containerd/containerd/v2/plugins"
-	"github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/api/types/swarm"
 	"github.com/moby/moby/client"
-	"github.com/moby/moby/v2/integration-cli/cli"
-	"github.com/moby/moby/v2/testutil/registry"
+	"github.com/moby/moby/v2/internal/testutil/registry"
 )
 
 func DaemonIsWindows() bool {
@@ -32,23 +30,23 @@ func DaemonIsLinux() bool {
 }
 
 func OnlyDefaultNetworks(ctx context.Context) bool {
-	apiClient, err := client.NewClientWithOpts(client.FromEnv)
+	apiClient, err := client.New(client.FromEnv)
 	if err != nil {
 		return false
 	}
-	networks, err := apiClient.NetworkList(ctx, network.ListOptions{})
-	if err != nil || len(networks) > 0 {
+	res, err := apiClient.NetworkList(ctx, client.NetworkListOptions{})
+	if err != nil || len(res.Items) > 0 {
 		return false
 	}
 	return true
 }
 
 func IsAmd64() bool {
-	return testEnv.DaemonVersion.Arch == "amd64"
+	return testEnv.DaemonInfo.Architecture == "amd64"
 }
 
 func NotPpc64le() bool {
-	return testEnv.DaemonVersion.Arch != "ppc64le"
+	return testEnv.DaemonInfo.Architecture != "ppc64le"
 }
 
 func UnixCli() bool {
@@ -156,15 +154,6 @@ func SwarmInactive() bool {
 
 func TODOBuildkit() bool {
 	return os.Getenv("DOCKER_BUILDKIT") == ""
-}
-
-func DockerCLIVersion(t testing.TB) string {
-	out := cli.DockerCmd(t, "--version").Stdout()
-	version := strings.Fields(out)
-	if len(version) < 3 {
-		t.Fatal("unknown version output", version)
-	}
-	return version[2]
 }
 
 // testRequires checks if the environment satisfies the requirements

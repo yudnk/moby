@@ -7,10 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
 	"github.com/moby/moby/client/pkg/stringid"
-	"github.com/moby/moby/v2/testutil/daemon"
+	"github.com/moby/moby/v2/internal/testutil/daemon"
 	"github.com/pkg/errors"
 	"gotest.tools/v3/assert"
 	"gotest.tools/v3/icmd"
@@ -27,7 +26,7 @@ type Daemon struct {
 // The daemon will not automatically start.
 func New(t testing.TB, dockerBinary string, dockerdBinary string, ops ...daemon.Option) *Daemon {
 	t.Helper()
-	ops = append(ops, daemon.WithDockerdBinary(dockerdBinary))
+	ops = append(ops, daemon.WithDockerdBinary(dockerdBinary), daemon.WithEnvVars("DOCKER_MIN_API_VERSION=1.24"))
 	d := daemon.New(t, ops...)
 	return &Daemon{
 		Daemon:       d,
@@ -86,17 +85,17 @@ func (d *Daemon) inspectFieldWithError(name, field string) (string, error) {
 func (d *Daemon) CheckActiveContainerCount(ctx context.Context) func(t *testing.T) (any, string) {
 	return func(t *testing.T) (any, string) {
 		t.Helper()
-		apiClient, err := client.NewClientWithOpts(client.FromEnv, client.WithHost(d.Sock()))
+		apiClient, err := client.New(client.FromEnv, client.WithHost(d.Sock()))
 		assert.NilError(t, err)
 
-		ctrs, err := apiClient.ContainerList(ctx, container.ListOptions{})
+		list, err := apiClient.ContainerList(ctx, client.ContainerListOptions{})
 		_ = apiClient.Close()
 		assert.NilError(t, err)
 		var out strings.Builder
-		for _, ctr := range ctrs {
+		for _, ctr := range list.Items {
 			out.WriteString(stringid.TruncateID(ctr.ID) + "\n")
 		}
-		return len(ctrs), out.String()
+		return len(list.Items), out.String()
 	}
 }
 

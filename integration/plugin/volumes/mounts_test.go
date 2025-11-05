@@ -6,9 +6,9 @@ import (
 
 	plugintypes "github.com/moby/moby/api/types/plugin"
 	"github.com/moby/moby/client"
-	"github.com/moby/moby/v2/testutil"
-	"github.com/moby/moby/v2/testutil/daemon"
-	"github.com/moby/moby/v2/testutil/fixtures/plugin"
+	"github.com/moby/moby/v2/internal/testutil"
+	"github.com/moby/moby/v2/internal/testutil/daemon"
+	"github.com/moby/moby/v2/internal/testutil/fixtures/plugin"
 	"gotest.tools/v3/assert"
 	"gotest.tools/v3/skip"
 )
@@ -47,14 +47,14 @@ func TestPluginWithDevMounts(t *testing.T) {
 		c.IpcHost = true
 	})
 
-	err = c.PluginEnable(ctx, "test", client.PluginEnableOptions{Timeout: 30})
+	_, err = c.PluginEnable(ctx, "test", client.PluginEnableOptions{Timeout: 30})
 	assert.NilError(t, err)
 	defer func() {
-		err := c.PluginRemove(ctx, "test", client.PluginRemoveOptions{Force: true})
+		_, err := c.PluginRemove(ctx, "test", client.PluginRemoveOptions{Force: true})
 		assert.Check(t, err)
 	}()
 
-	p, _, err := c.PluginInspectWithRaw(ctx, "test")
+	resp, err := c.PluginInspect(ctx, "test", client.PluginInspectOptions{})
 	assert.NilError(t, err)
-	assert.Assert(t, p.Enabled)
+	assert.Assert(t, resp.Plugin.Enabled)
 }

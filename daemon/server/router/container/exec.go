@@ -10,7 +10,8 @@ import (
 	"github.com/moby/moby/api/pkg/stdcopy"
 	"github.com/moby/moby/api/types"
 	"github.com/moby/moby/api/types/container"
-	"github.com/moby/moby/api/types/versions"
+	"github.com/moby/moby/v2/daemon/internal/stdcopymux"
+	"github.com/moby/moby/v2/daemon/internal/versions"
 	"github.com/moby/moby/v2/daemon/server/backend"
 	"github.com/moby/moby/v2/daemon/server/httputils"
 	"github.com/moby/moby/v2/errdefs"
@@ -39,7 +40,7 @@ func (c *containerRouter) postContainerExecCreate(ctx context.Context, w http.Re
 		return err
 	}
 
-	execConfig := &container.ExecOptions{}
+	execConfig := &container.ExecCreateRequest{}
 	if err := httputils.ReadJSON(r, execConfig); err != nil {
 		return err
 	}
@@ -78,7 +79,7 @@ func (c *containerRouter) postContainerExecStart(ctx context.Context, w http.Res
 		stdout, stderr, outStream io.Writer
 	)
 
-	options := &container.ExecStartOptions{}
+	options := &container.ExecStartRequest{}
 	if err := httputils.ReadJSON(r, options); err != nil {
 		return err
 	}
@@ -130,8 +131,8 @@ func (c *containerRouter) postContainerExecStart(ctx context.Context, w http.Res
 		if options.Tty {
 			stdout = outStream
 		} else {
-			stderr = stdcopy.NewStdWriter(outStream, stdcopy.Stderr)
-			stdout = stdcopy.NewStdWriter(outStream, stdcopy.Stdout)
+			stderr = stdcopymux.NewStdWriter(outStream, stdcopy.Stderr)
+			stdout = stdcopymux.NewStdWriter(outStream, stdcopy.Stdout)
 		}
 	}
 

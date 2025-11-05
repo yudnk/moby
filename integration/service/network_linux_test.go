@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	containertypes "github.com/moby/moby/api/types/container"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/moby/moby/api/types/network"
 	swarmtypes "github.com/moby/moby/api/types/swarm"
 	"github.com/moby/moby/client"
@@ -16,7 +16,7 @@ import (
 	net "github.com/moby/moby/v2/integration/internal/network"
 	"github.com/moby/moby/v2/integration/internal/swarm"
 	"github.com/moby/moby/v2/integration/internal/testutils/networking"
-	"github.com/moby/moby/v2/testutil/daemon"
+	"github.com/moby/moby/v2/internal/testutil/daemon"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 	"gotest.tools/v3/golden"
@@ -28,7 +28,7 @@ import (
 func TestDockerNetworkConnectAliasPreV144(t *testing.T) {
 	ctx := setupTest(t)
 
-	d := swarm.NewSwarm(ctx, t, testEnv)
+	d := swarm.NewSwarm(ctx, t, testEnv, daemon.WithEnvVars("DOCKER_MIN_API_VERSION=1.43"))
 	defer d.Stop(t)
 	apiClient := d.NewClientT(t, client.WithVersion("1.43"))
 	defer apiClient.Close()
@@ -47,20 +47,23 @@ func TestDockerNetworkConnectAliasPreV144(t *testing.T) {
 		}
 	})
 
-	err := apiClient.NetworkConnect(ctx, name, cID1, &network.EndpointSettings{
-		Aliases: []string{
-			"aaa",
+	_, err := apiClient.NetworkConnect(ctx, name, client.NetworkConnectOptions{
+		Container: cID1,
+		EndpointConfig: &network.EndpointSettings{
+			Aliases: []string{
+				"aaa",
+			},
 		},
 	})
 	assert.NilError(t, err)
 
-	err = apiClient.ContainerStart(ctx, cID1, containertypes.StartOptions{})
+	_, err = apiClient.ContainerStart(ctx, cID1, client.ContainerStartOptions{})
 	assert.NilError(t, err)
 
-	ng1, err := apiClient.ContainerInspect(ctx, cID1)
+	ng1, err := apiClient.ContainerInspect(ctx, cID1, client.ContainerInspectOptions{})
 	assert.NilError(t, err)
-	assert.Check(t, is.Equal(len(ng1.NetworkSettings.Networks[name].Aliases), 2))
-	assert.Check(t, is.Equal(ng1.NetworkSettings.Networks[name].Aliases[0], "aaa"))
+	assert.Check(t, is.Equal(len(ng1.Container.NetworkSettings.Networks[name].Aliases), 2))
+	assert.Check(t, is.Equal(ng1.Container.NetworkSettings.Networks[name].Aliases[0], "aaa"))
 
 	cID2 := container.Create(ctx, t, apiClient, func(c *container.TestContainerConfig) {
 		c.NetworkingConfig = &network.NetworkingConfig{
@@ -70,20 +73,23 @@ func TestDockerNetworkConnectAliasPreV144(t *testing.T) {
 		}
 	})
 
-	err = apiClient.NetworkConnect(ctx, name, cID2, &network.EndpointSettings{
-		Aliases: []string{
-			"bbb",
+	_, err = apiClient.NetworkConnect(ctx, name, client.NetworkConnectOptions{
+		Container: cID2,
+		EndpointConfig: &network.EndpointSettings{
+			Aliases: []string{
+				"bbb",
+			},
 		},
 	})
 	assert.NilError(t, err)
 
-	err = apiClient.ContainerStart(ctx, cID2, containertypes.StartOptions{})
+	_, err = apiClient.ContainerStart(ctx, cID2, client.ContainerStartOptions{})
 	assert.NilError(t, err)
 
-	ng2, err := apiClient.ContainerInspect(ctx, cID2)
+	ng2, err := apiClient.ContainerInspect(ctx, cID2, client.ContainerInspectOptions{})
 	assert.NilError(t, err)
-	assert.Check(t, is.Equal(len(ng2.NetworkSettings.Networks[name].Aliases), 2))
-	assert.Check(t, is.Equal(ng2.NetworkSettings.Networks[name].Aliases[0], "bbb"))
+	assert.Check(t, is.Equal(len(ng2.Container.NetworkSettings.Networks[name].Aliases), 2))
+	assert.Check(t, is.Equal(ng2.Container.NetworkSettings.Networks[name].Aliases[0], "bbb"))
 }
 
 func TestDockerNetworkReConnect(t *testing.T) {
@@ -108,21 +114,27 @@ func TestDockerNetworkReConnect(t *testing.T) {
 		}
 	})
 
-	err := apiClient.NetworkConnect(ctx, name, c1, &network.EndpointSettings{})
+	_, err := apiClient.NetworkConnect(ctx, name, client.NetworkConnectOptions{
+		Container:      c1,
+		EndpointConfig: &network.EndpointSettings{},
+	})
 	assert.NilError(t, err)
 
-	err = apiClient.ContainerStart(ctx, c1, containertypes.StartOptions{})
+	_, err = apiClient.ContainerStart(ctx, c1, client.ContainerStartOptions{})
 	assert.NilError(t, err)
 
-	n1, err := apiClient.ContainerInspect(ctx, c1)
+	n1, err := apiClient.ContainerInspect(ctx, c1, client.ContainerInspectOptions{})
 	assert.NilError(t, err)
 
-	err = apiClient.NetworkConnect(ctx, name, c1, &network.EndpointSettings{})
+	_, err = apiClient.NetworkConnect(ctx, name, client.NetworkConnectOptions{
+		Container:      c1,
+		EndpointConfig: &network.EndpointSettings{},
+	})
 	assert.ErrorContains(t, err, "is already attached to network")
 
-	n2, err := apiClient.ContainerInspect(ctx, c1)
+	n2, err := apiClient.ContainerInspect(ctx, c1, client.ContainerInspectOptions{})
 	assert.NilError(t, err)
-	assert.Check(t, is.DeepEqual(n1, n2))
+	assert.Check(t, is.DeepEqual(n1.Container, n2.Container, cmpopts.EquateComparable(netip.Addr{}, netip.Prefix{})))
 }
 
 // Check that a swarm-scoped network can't have EnableIPv4=false.
@@ -171,7 +183,7 @@ func TestSwarmScopedNetFromConfig(t *testing.T) {
 		swarm.ServiceWithNetwork(swarmNetName),
 	)
 	defer func() {
-		err := c.ServiceRemove(ctx, serviceID)
+		_, err := c.ServiceRemove(ctx, serviceID, client.ServiceRemoveOptions{})
 		assert.NilError(t, err)
 	}()
 
@@ -246,7 +258,7 @@ func TestDockerIngressChainPosition(t *testing.T) {
 			}),
 		)
 		defer func() {
-			err := c.ServiceRemove(ctx, serviceID)
+			_, err := c.ServiceRemove(ctx, serviceID, client.ServiceRemoveOptions{})
 			assert.NilError(t, err)
 		}()
 
@@ -306,7 +318,7 @@ func TestRestoreIngressRulesOnFirewalldReload(t *testing.T) {
 		}),
 	)
 	defer func() {
-		err := c.ServiceRemove(ctx, serviceID)
+		_, err := c.ServiceRemove(ctx, serviceID, client.ServiceRemoveOptions{})
 		assert.NilError(t, err)
 	}()
 

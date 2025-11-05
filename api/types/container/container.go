@@ -27,13 +27,6 @@ type PathStat struct {
 	LinkTarget string      `json:"linkTarget"`
 }
 
-// CopyToContainerOptions holds information
-// about files to copy into a container
-type CopyToContainerOptions struct {
-	AllowOverwriteDirWithFile bool
-	CopyUIDGID                bool
-}
-
 // MountPoint represents a mount point configuration inside the container.
 // This is used for reporting the mountpoints in use by a container.
 type MountPoint struct {
@@ -119,16 +112,9 @@ type Summary struct {
 	Mounts          []MountPoint
 }
 
-// ContainerJSONBase contains response of Engine API GET "/containers/{name:.*}/json"
-// for API version 1.18 and older.
-//
-// TODO(thaJeztah): combine ContainerJSONBase and InspectResponse into a single struct.
-// The split between ContainerJSONBase (ContainerJSONBase) and InspectResponse (InspectResponse)
-// was done in commit 6deaa58ba5f051039643cedceee97c8695e2af74 (https://github.com/moby/moby/pull/13675).
-// ContainerJSONBase contained all fields for API < 1.19, and InspectResponse
-// held fields that were added in API 1.19 and up. Given that the minimum
-// supported API version is now 1.24, we no longer use the separate type.
-type ContainerJSONBase struct {
+// InspectResponse is the response for the GET "/containers/{name:.*}/json"
+// endpoint.
+type InspectResponse struct {
 	ID              string `json:"Id"`
 	Created         string
 	Path            string
@@ -148,15 +134,15 @@ type ContainerJSONBase struct {
 	AppArmorProfile string
 	ExecIDs         []string
 	HostConfig      *HostConfig
-	GraphDriver     storage.DriverData
+
+	// GraphDriver contains information about the container's graph driver.
+	GraphDriver *storage.DriverData `json:"GraphDriver,omitempty"`
+
+	// Storage contains information about the storage used for the container's filesystem.
+	Storage *storage.Storage `json:"Storage,omitempty"`
+
 	SizeRw          *int64 `json:",omitempty"`
 	SizeRootFs      *int64 `json:",omitempty"`
-}
-
-// InspectResponse is the response for the GET "/containers/{name:.*}/json"
-// endpoint.
-type InspectResponse struct {
-	*ContainerJSONBase
 	Mounts          []MountPoint
 	Config          *Config
 	NetworkSettings *NetworkSettings

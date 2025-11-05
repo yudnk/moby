@@ -14,7 +14,6 @@ import (
 
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/containerd/log"
-	"github.com/moby/moby/v2/daemon/internal/sliceutil"
 	"github.com/moby/moby/v2/daemon/internal/stringid"
 	"github.com/moby/moby/v2/daemon/libnetwork/datastore"
 	"github.com/moby/moby/v2/daemon/libnetwork/driverapi"
@@ -22,7 +21,7 @@ import (
 	"github.com/moby/moby/v2/daemon/libnetwork/netlabel"
 	"github.com/moby/moby/v2/daemon/libnetwork/scope"
 	"github.com/moby/moby/v2/daemon/libnetwork/types"
-	"github.com/moby/moby/v2/errdefs"
+	"github.com/moby/moby/v2/internal/sliceutil"
 	"go.opentelemetry.io/otel"
 )
 
@@ -514,9 +513,12 @@ func (ep *Endpoint) sbJoin(ctx context.Context, sb *Sandbox, options ...Endpoint
 	ep.mu.Unlock()
 	defer func() {
 		if retErr != nil {
-			ep.mu.Lock()
-			ep.sandboxID = ""
-			ep.mu.Unlock()
+			if err := ep.sbLeave(ctx, sb, n, true); err != nil {
+				log.G(ctx).WithFields(log.Fields{
+					"error":  err,
+					"retErr": retErr,
+				}).Warn("Failed to remove endpoint after join error")
+			}
 		}
 	}()
 
@@ -529,13 +531,15 @@ func (ep *Endpoint) sbJoin(ctx context.Context, sb *Sandbox, options ...Endpoint
 		return fmt.Errorf("failed to get driver during join: %v", err)
 	}
 
+	// Tell the driver about the new endpoint. The driver populates ep.joinInfo using
+	// the Endpoint's JoinInfo interface.
 	if err := d.Join(ctx, nid, epid, sb.Key(), ep, ep.generic, sb.Labels()); err != nil {
 		return err
 	}
 	defer func() {
 		if retErr != nil {
-			if e := d.Leave(nid, epid); e != nil {
-				log.G(ctx).Warnf("driver leave failed while rolling back join: %v", e)
+			if err := d.Leave(nid, epid); err != nil {
+				log.G(ctx).WithError(err).Warnf("driver leave failed while rolling back join")
 			}
 		}
 	}()
@@ -546,66 +550,39 @@ func (ep *Endpoint) sbJoin(ctx context.Context, sb *Sandbox, options ...Endpoint
 		ep.joinInfo.gw6 = nil
 	}
 
-	if !n.getController().isAgent() {
-		if !n.getController().isSwarmNode() || n.Scope() != scope.Swarm || !n.driverIsMultihost() {
-			n.updateSvcRecord(context.WithoutCancel(ctx), ep, true)
-		}
-	}
-
-	sb.addHostsEntries(ctx, ep.getEtcHostsAddrs())
-	if err := sb.updateDNS(n.enableIPv6); err != nil {
-		return err
-	}
-
-	// Current endpoint(s) providing external connectivity for the sandbox
+	// Current endpoint(s) providing external connectivity for the Sandbox.
+	// If ep is selected as a gateway endpoint once it's been added to the Sandbox,
+	// these are the endpoints that need to be un-gateway'd.
 	gwepBefore4, gwepBefore6 := sb.getGatewayEndpoint()
 
 	sb.addEndpoint(ep)
-	defer func() {
-		if retErr != nil {
-			sb.removeEndpoint(ep)
+
+	// For Linux, at this point, in most cases, the container task has been created
+	// and the container's network namespace (sb.osSbox) is ready to be configured
+	// with addresses, routes and so on. The exception is when the SetKey re-exec is
+	// used by a build container. In that case, the osSbox doesn't exist yet. So,
+	// stop here and SetKey will finish off the configuration when it's ready.
+	// For Windows, canPopulateNetworkResources() is always true.
+	if sb.canPopulateNetworkResources() {
+		if err := sb.populateNetworkResources(ctx, ep); err != nil {
+			return err
 		}
-	}()
-
-	if err := sb.populateNetworkResources(ctx, ep); err != nil {
-		return err
-	}
-
-	if err := addEpToResolver(ctx, n.Name(), ep.Name(), &sb.config, ep.iface, n.Resolvers()); err != nil {
-		return errdefs.System(err)
+		if err := ep.updateExternalConnectivity(ctx, sb, gwepBefore4, gwepBefore6); err != nil {
+			return err
+		}
 	}
 
 	if err := n.getController().storeEndpoint(ctx, ep); err != nil {
 		return err
 	}
+	return nil
+}
 
-	if err := ep.addDriverInfoToCluster(); err != nil {
-		return err
-	}
-
-	defer func() {
-		if retErr != nil {
-			if e := ep.deleteDriverInfoFromCluster(); e != nil {
-				log.G(ctx).WithError(e).Error("Could not delete endpoint state from cluster on join failure")
-			}
-		}
-	}()
-
-	// Load balancing endpoints should never have a default gateway nor
-	// should they alter the status of a network's default gateway
-	if ep.loadBalancer && !sb.ingress {
-		return nil
-	}
-
-	if sb.needDefaultGW() && sb.getEndpointInGWNetwork() == nil {
-		return sb.setupDefaultGW()
-	}
-
-	// Enable upstream forwarding if the sandbox gained external connectivity.
-	if sb.resolver != nil {
-		sb.resolver.SetForwardingPolicy(sb.hasExternalAccess())
-	}
-
+// updateExternalConnectivity configures an Endpoint when it becomes the gateway
+// endpoint for a network, revoking external connectivity from the previous gateway
+// endpoints, if necessary. (It does not update the Sandbox's default gateway, the
+// Sandbox takes care of that. This is just about network driver config.)
+func (ep *Endpoint) updateExternalConnectivity(ctx context.Context, sb *Sandbox, gwepBefore4, gwepBefore6 *Endpoint) (retErr error) {
 	gwepAfter4, gwepAfter6 := sb.getGatewayEndpoint()
 
 	log.G(ctx).Infof("sbJoin: gwep4 '%s'->'%s', gwep6 '%s'->'%s'",
@@ -649,16 +626,6 @@ func (ep *Endpoint) sbJoin(ctx context.Context, sb *Sandbox, options ...Endpoint
 	// Tell the new endpoint whether it's a gateway.
 	if err := ep.programExternalConnectivity(ctx, gwepAfter4, gwepAfter6); err != nil {
 		return err
-	}
-
-	if !sb.needDefaultGW() {
-		if e := sb.clearDefaultGW(); e != nil {
-			log.G(ctx).WithFields(log.Fields{
-				"error": e,
-				"sid":   sb.ID(),
-				"cid":   sb.ContainerID(),
-			}).Warn("Failure while disconnecting sandbox from gateway network")
-		}
 	}
 
 	return nil
@@ -753,20 +720,20 @@ func (ep *Endpoint) Leave(ctx context.Context, sb *Sandbox) error {
 	sb.joinLeaveMu.Lock()
 	defer sb.joinLeaveMu.Unlock()
 
-	return ep.sbLeave(ctx, sb, false)
-}
-
-func (ep *Endpoint) sbLeave(ctx context.Context, sb *Sandbox, force bool) error {
 	n, err := ep.getNetworkFromStore()
 	if err != nil {
 		return fmt.Errorf("failed to get network from store during leave: %v", err)
 	}
 
-	ep, err = n.getEndpointFromStore(ep.ID())
+	storedEp, err := n.getEndpointFromStore(ep.ID())
 	if err != nil {
 		return fmt.Errorf("failed to get endpoint from store during leave: %v", err)
 	}
 
+	return storedEp.sbLeave(ctx, sb, n, false)
+}
+
+func (ep *Endpoint) sbLeave(ctx context.Context, sb *Sandbox, n *Network, force bool) error {
 	ctx = log.WithLogger(ctx, log.G(ctx).WithFields(log.Fields{
 		"nid": n.ID(),
 		"net": n.Name(),
@@ -820,16 +787,37 @@ func (ep *Endpoint) sbLeave(ctx context.Context, sb *Sandbox, force bool) error 
 	// Capture the addresses that were added to the container's /etc/hosts here,
 	// before the endpoint is deleted, so that they can be removed from /etc/hosts.
 	etcHostsAddrs := ep.getEtcHostsAddrs()
+	// Before removing the Endpoint from the Sandbox's list of endpoints, check whether
+	// it's acting as a gateway so that new gateways can be selected if it is.
+	wasGwEp := sb.isGatewayEndpoint(ep.id)
 
-	if err := sb.clearNetworkResources(ep); err != nil {
-		log.G(ctx).WithError(err).Warn("Failed to clean up network resources on container disconnect")
+	// Remove the sb's references to ep.
+	sb.mu.Lock()
+	osSbox := sb.osSbox
+	delete(sb.populatedEndpoints, ep.id)
+	delete(sb.epPriority, ep.id)
+	sb.endpoints = slices.DeleteFunc(sb.endpoints, func(other *Endpoint) bool { return other.id == ep.id })
+	sb.mu.Unlock()
+
+	// Delete interfaces, routes etc. from the OS.
+	if osSbox != nil {
+		releaseOSSboxResources(osSbox, ep)
+
+		// Even if the interface was initially created in the container's namespace, it's
+		// now been moved out. When a legacy link is deleted, the Endpoint is removed and
+		// then re-added to the Sandbox. So, to make sure the re-add works, note that the
+		// interface is now outside the container's netns.
+		ep.iface.createdInContainer = false
 	}
 
-	// Even if the interface was initially created in the container's namespace, it's
-	// now been moved out. When a legacy link is deleted, the Endpoint is removed and
-	// then re-added to the Sandbox. So, to make sure the re-add works, note that the
-	// interface is now outside the container's netns.
-	ep.iface.createdInContainer = false
+	// Update gateway / static routes if the ep was the gateway.
+	var gwepAfter4, gwepAfter6 *Endpoint
+	if wasGwEp {
+		gwepAfter4, gwepAfter6 = sb.getGatewayEndpoint()
+		if err := sb.updateGateway(gwepAfter4, gwepAfter6); err != nil {
+			return fmt.Errorf("updating gateway endpoint: %w", err)
+		}
+	}
 
 	// Update the store about the sandbox detach only after we
 	// have completed sb.clearNetworkResources above to avoid
@@ -869,16 +857,17 @@ func (ep *Endpoint) sbLeave(ctx context.Context, sb *Sandbox, force bool) error 
 		sb.resolver.SetForwardingPolicy(sb.hasExternalAccess())
 	}
 
-	// Find new endpoint(s) to provide external connectivity for the sandbox.
-	gwepAfter4, gwepAfter6 := sb.getGatewayEndpoint()
-	if gwepAfter4 != nil {
-		if err := gwepAfter4.programExternalConnectivity(ctx, gwepAfter4, gwepAfter6); err != nil {
-			log.G(ctx).WithError(err).Error("Failed to set IPv4 gateway")
+	// Configure the endpoints that now provide external connectivity for the sandbox.
+	if wasGwEp {
+		if gwepAfter4 != nil {
+			if err := gwepAfter4.programExternalConnectivity(ctx, gwepAfter4, gwepAfter6); err != nil {
+				log.G(ctx).WithError(err).Error("Failed to set IPv4 gateway")
+			}
 		}
-	}
-	if gwepAfter6 != nil && gwepAfter6 != gwepAfter4 {
-		if err := gwepAfter6.programExternalConnectivity(ctx, gwepAfter4, gwepAfter6); err != nil {
-			log.G(ctx).WithError(err).Error("Failed to set IPv6 gateway")
+		if gwepAfter6 != nil && gwepAfter6 != gwepAfter4 {
+			if err := gwepAfter6.programExternalConnectivity(ctx, gwepAfter4, gwepAfter6); err != nil {
+				log.G(ctx).WithError(err).Error("Failed to set IPv6 gateway")
+			}
 		}
 	}
 
@@ -914,15 +903,20 @@ func (ep *Endpoint) Delete(ctx context.Context, force bool) error {
 	sbid := ep.sandboxID
 	ep.mu.Unlock()
 
-	sb, _ := n.getController().SandboxByID(sbid)
-	if sb != nil && !force {
-		return &ActiveContainerError{name: name, id: epid}
-	}
-
-	if sb != nil {
-		if e := ep.sbLeave(context.WithoutCancel(ctx), sb, force); e != nil {
-			log.G(ctx).Warnf("failed to leave sandbox for endpoint %s : %v", name, e)
+	if sb, _ := n.getController().SandboxByID(sbid); sb != nil {
+		if !force {
+			return &ActiveContainerError{name: name, id: epid}
 		}
+		func() {
+			// Make sure this Delete isn't racing a Join/Leave/Delete that might also be
+			// updating the Sandbox's selection of gateway endpoints.
+			sb.joinLeaveMu.Lock()
+			defer sb.joinLeaveMu.Unlock()
+
+			if e := ep.sbLeave(context.WithoutCancel(ctx), sb, n, force); e != nil {
+				log.G(ctx).Warnf("failed to leave sandbox for endpoint %s : %v", name, e)
+			}
+		}()
 	}
 
 	if err = n.getController().deleteStoredEndpoint(ep); err != nil {
@@ -946,7 +940,7 @@ func (ep *Endpoint) Delete(ctx context.Context, force bool) error {
 		return err
 	}
 
-	ep.releaseAddress()
+	ep.releaseIPAddresses()
 
 	return nil
 }
@@ -1032,8 +1026,8 @@ var (
 	linkLocalMaskIPv6 = net.CIDRMask(64, 128)
 )
 
-// CreateOptionIpam function returns an option setter for the ipam configuration for this endpoint
-func CreateOptionIpam(ipV4, ipV6 net.IP, llIPs []net.IP, ipamOptions map[string]string) EndpointOption {
+// CreateOptionIPAM function returns an option setter for the ipam configuration for this endpoint
+func CreateOptionIPAM(ipV4, ipV6 net.IP, llIPs []net.IP) EndpointOption {
 	return func(ep *Endpoint) {
 		ep.prefAddress = ipV4
 		ep.prefAddressV6 = ipV6
@@ -1046,7 +1040,6 @@ func CreateOptionIpam(ipV4, ipV6 net.IP, llIPs []net.IP, ipamOptions map[string]
 				ep.iface.llAddrs = append(ep.iface.llAddrs, nw)
 			}
 		}
-		ep.ipamOptions = ipamOptions
 	}
 }
 
@@ -1237,7 +1230,7 @@ func (ep *Endpoint) assignAddressVersion(ipVer int, ipam ipamapi.Ipam) error {
 	return fmt.Errorf("no available IPv%d addresses on this network's address pools: %s (%s)", ipVer, n.Name(), n.ID())
 }
 
-func (ep *Endpoint) releaseAddress() {
+func (ep *Endpoint) releaseIPAddresses() {
 	n := ep.getNetwork()
 	if n.hasSpecialDriver() {
 		return
@@ -1262,6 +1255,53 @@ func (ep *Endpoint) releaseAddress() {
 			log.G(context.TODO()).Warnf("Failed to release ip address %s on delete of endpoint %s (%s): %v", ep.iface.addrv6.IP, ep.Name(), ep.ID(), err)
 		}
 	}
+}
+
+func (ep *Endpoint) releaseIPv6Address(ctx context.Context) error {
+	n := ep.network
+	ctx = log.WithLogger(ctx, log.G(ctx).WithFields(log.Fields{
+		"net": n.Name(),
+		"ep":  ep.name,
+		"ip":  ep.iface.addrv6,
+	}))
+
+	if ep.iface.addrv6 == nil || n.hasSpecialDriver() {
+		return nil
+	}
+
+	log.G(ctx).Debug("Releasing IPv6 address for endpoint")
+
+	ipam, _, err := n.getController().getIPAMDriver(n.ipamType)
+	if err != nil {
+		log.G(ctx).WithError(err).Warn("Failed to retrieve ipam driver to release IPv6 address")
+		return err
+	}
+
+	if err := ipam.ReleaseAddress(ep.iface.v6PoolID, ep.iface.addrv6.IP); err != nil {
+		log.G(ctx).WithError(err).Warn("Failed to release IPv6 address")
+		return err
+	}
+
+	ep.iface.addrv6 = nil
+	if ep.joinInfo != nil {
+		ep.joinInfo.gw6 = nil
+	}
+
+	d, err := n.driver(true)
+	if err != nil {
+		return fmt.Errorf("fetching driver to release IPv6 address: %v", err)
+	}
+	if dr, ok := d.(driverapi.IPv6Releaser); ok {
+		if err := dr.ReleaseIPv6(ctx, n.id, ep.id); err != nil {
+			return fmt.Errorf("releasing IPv6 address: %v", err)
+		}
+	}
+
+	if err := ep.network.getController().updateToStore(ctx, ep); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func (c *Controller) cleanupLocalEndpoints() error {

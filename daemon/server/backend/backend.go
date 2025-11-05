@@ -8,6 +8,7 @@ import (
 	"github.com/distribution/reference"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/network"
+	"github.com/moby/moby/v2/daemon/internal/filters"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
@@ -99,6 +100,47 @@ type ContainerInspectOptions struct {
 	Size bool
 }
 
+// ContainerListOptions holds parameters to list containers with.
+type ContainerListOptions struct {
+	Size    bool
+	All     bool
+	Latest  bool
+	Since   string
+	Before  string
+	Limit   int
+	Filters filters.Args
+}
+
+// ContainerLogsOptions holds parameters to filter logs with.
+type ContainerLogsOptions struct {
+	ShowStdout bool
+	ShowStderr bool
+	Since      string
+	Until      string
+	Timestamps bool
+	Follow     bool
+	Tail       string
+	Details    bool
+}
+
+// ContainerStopOptions holds the options to stop or restart a container.
+type ContainerStopOptions struct {
+	// Signal (optional) is the signal to send to the container to (gracefully)
+	// stop it before forcibly terminating the container with SIGKILL after the
+	// timeout expires. If not value is set, the default (SIGTERM) is used.
+	Signal string `json:",omitempty"`
+
+	// Timeout (optional) is the timeout (in seconds) to wait for the container
+	// to stop gracefully before forcibly terminating it with SIGKILL.
+	//
+	// - Use nil to use the default timeout (10 seconds).
+	// - Use '-1' to wait indefinitely.
+	// - Use '0' to not wait for the container to exit gracefully, and
+	//   immediately proceeds to forcibly terminating the container.
+	// - Other positive values are used as timeout (in seconds).
+	Timeout *int `json:",omitempty"`
+}
+
 // ExecStartConfig holds the options to start container's exec.
 type ExecStartConfig struct {
 	Stdin       io.Reader
@@ -107,35 +149,15 @@ type ExecStartConfig struct {
 	ConsoleSize *[2]uint `json:",omitempty"`
 }
 
-// ExecInspect holds information about a running process started
-// with docker exec.
-type ExecInspect = container.ExecInspectResponse
-
-// ExecProcessConfig holds information about the exec process
-// running on the host.
-type ExecProcessConfig = container.ExecProcessConfig
-
 // CreateImageConfig is the configuration for creating an image from a
 // container.
 type CreateImageConfig struct {
 	Tag     reference.NamedTagged
-	Pause   bool
+	NoPause bool
 	Author  string
 	Comment string
 	Config  *container.Config
 	Changes []string
-}
-
-// GetImageOpts holds parameters to retrieve image information
-// from the backend.
-type GetImageOpts struct {
-	Platform *ocispec.Platform
-}
-
-// ImageInspectOpts holds parameters to inspect an image.
-type ImageInspectOpts struct {
-	Manifests bool
-	Platform  *ocispec.Platform
 }
 
 // CommitConfig is the configuration for creating an image as part of a build.
@@ -172,7 +194,6 @@ type PluginDisableConfig struct {
 
 // NetworkListConfig stores the options available for listing networks
 type NetworkListConfig struct {
-	// TODO(@cpuguy83): naming is hard, this is pulled from what was being used in the router before moving here
-	Detailed bool
-	Verbose  bool
+	WithServices bool
+	WithStatus   bool
 }

@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -29,7 +30,7 @@ import (
 	"github.com/moby/moby/v2/daemon/libnetwork/options"
 	"github.com/moby/moby/v2/daemon/libnetwork/osl"
 	"github.com/moby/moby/v2/daemon/libnetwork/types"
-	"github.com/moby/moby/v2/internal/testutils/netnsutils"
+	"github.com/moby/moby/v2/internal/testutil/netnsutils"
 	"github.com/moby/moby/v2/pkg/plugins"
 	"github.com/moby/sys/reexec"
 	"github.com/pkg/errors"
@@ -48,10 +49,8 @@ func newController(t *testing.T) *libnetwork.Controller {
 	c, err := libnetwork.New(
 		context.Background(),
 		config.OptionDataDir(t.TempDir()),
-		config.OptionDriverConfig(bridgeNetType, map[string]any{
-			netlabel.GenericData: options.Generic{
-				"EnableIPForwarding": true,
-			},
+		config.OptionBridgeConfig(bridge.Configuration{
+			EnableIPForwarding: true,
 		}),
 		config.OptionDefaultAddressPoolConfig(ipamutils.GetLocalScopeDefaultNetworks()),
 	)
@@ -87,7 +86,7 @@ func TestNull(t *testing.T) {
 	cnt, err := controller.NewSandbox(context.Background(), "null_container",
 		libnetwork.OptionHostname("test"),
 		libnetwork.OptionDomainname("example.com"),
-		libnetwork.OptionExtraHost("web", "192.168.0.1"))
+		libnetwork.OptionExtraHost("web", netip.MustParseAddr("192.168.0.1")))
 	assert.NilError(t, err)
 
 	network, err := createTestNetwork(controller, "null", "testnull", options.Generic{}, nil, nil)
@@ -439,7 +438,7 @@ func TestNetworkEndpointsWalkers(t *testing.T) {
 	assert.Assert(t, epWanted != nil)
 	assert.Assert(t, is.Equal(epWanted, ep11))
 
-	ctx := context.TODO()
+	ctx := t.Context()
 	current := len(controller.Networks(ctx))
 
 	// Create network 2
@@ -659,7 +658,7 @@ func TestEndpointDeleteWithActiveContainer(t *testing.T) {
 	cnt, err := controller.NewSandbox(context.Background(), containerID,
 		libnetwork.OptionHostname("test"),
 		libnetwork.OptionDomainname("example.com"),
-		libnetwork.OptionExtraHost("web", "192.168.0.1"))
+		libnetwork.OptionExtraHost("web", netip.MustParseAddr("192.168.0.1")))
 	assert.NilError(t, err)
 	defer func() {
 		assert.Check(t, cnt.Delete(context.Background()))
@@ -704,7 +703,7 @@ func TestEndpointMultipleJoins(t *testing.T) {
 	sbx1, err := controller.NewSandbox(context.Background(), containerID,
 		libnetwork.OptionHostname("test"),
 		libnetwork.OptionDomainname("example.com"),
-		libnetwork.OptionExtraHost("web", "192.168.0.1"),
+		libnetwork.OptionExtraHost("web", netip.MustParseAddr("192.168.0.1")),
 	)
 	assert.NilError(t, err)
 	defer func() {
@@ -799,7 +798,7 @@ func TestContainerInvalidLeave(t *testing.T) {
 	cnt, err := controller.NewSandbox(context.Background(), containerID,
 		libnetwork.OptionHostname("test"),
 		libnetwork.OptionDomainname("example.com"),
-		libnetwork.OptionExtraHost("web", "192.168.0.1"))
+		libnetwork.OptionExtraHost("web", netip.MustParseAddr("192.168.0.1")))
 	assert.NilError(t, err)
 	defer func() {
 		assert.Check(t, cnt.Delete(context.Background()))
@@ -847,7 +846,7 @@ func TestEndpointUpdateParent(t *testing.T) {
 	sbx1, err := controller.NewSandbox(context.Background(), containerID,
 		libnetwork.OptionHostname("test"),
 		libnetwork.OptionDomainname("example.com"),
-		libnetwork.OptionExtraHost("web", "192.168.0.1"))
+		libnetwork.OptionExtraHost("web", netip.MustParseAddr("192.168.0.1")))
 	assert.NilError(t, err)
 	defer func() {
 		assert.Check(t, sbx1.Delete(context.Background()))
@@ -857,7 +856,7 @@ func TestEndpointUpdateParent(t *testing.T) {
 		libnetwork.OptionHostname("test2"),
 		libnetwork.OptionDomainname("example.com"),
 		libnetwork.OptionHostsPath("/var/lib/docker/test_network/container2/hosts"),
-		libnetwork.OptionExtraHost("web", "192.168.0.2"))
+		libnetwork.OptionExtraHost("web", netip.MustParseAddr("192.168.0.2")))
 	assert.NilError(t, err)
 	defer func() {
 		assert.Check(t, sbx2.Delete(context.Background()))
@@ -981,7 +980,7 @@ func TestHost(t *testing.T) {
 	sbx1, err := controller.NewSandbox(context.Background(), "host_c1",
 		libnetwork.OptionHostname("test1"),
 		libnetwork.OptionDomainname("example.com"),
-		libnetwork.OptionExtraHost("web", "192.168.0.1"),
+		libnetwork.OptionExtraHost("web", netip.MustParseAddr("192.168.0.1")),
 		libnetwork.OptionUseDefaultSandbox())
 	assert.NilError(t, err)
 	defer func() {
@@ -991,7 +990,7 @@ func TestHost(t *testing.T) {
 	sbx2, err := controller.NewSandbox(context.Background(), "host_c2",
 		libnetwork.OptionHostname("test2"),
 		libnetwork.OptionDomainname("example.com"),
-		libnetwork.OptionExtraHost("web", "192.168.0.1"),
+		libnetwork.OptionExtraHost("web", netip.MustParseAddr("192.168.0.1")),
 		libnetwork.OptionUseDefaultSandbox())
 	assert.NilError(t, err)
 	defer func() {
@@ -1027,7 +1026,7 @@ func TestHost(t *testing.T) {
 	cnt3, err := controller.NewSandbox(context.Background(), "host_c3",
 		libnetwork.OptionHostname("test3"),
 		libnetwork.OptionDomainname("example.com"),
-		libnetwork.OptionExtraHost("web", "192.168.0.1"),
+		libnetwork.OptionExtraHost("web", netip.MustParseAddr("192.168.0.1")),
 		libnetwork.OptionUseDefaultSandbox())
 	assert.NilError(t, err)
 	defer func() {
@@ -1128,7 +1127,7 @@ func TestEndpointJoin(t *testing.T) {
 	sb, err := controller.NewSandbox(context.Background(), containerID,
 		libnetwork.OptionHostname("test"),
 		libnetwork.OptionDomainname("example.com"),
-		libnetwork.OptionExtraHost("web", "192.168.0.1"))
+		libnetwork.OptionExtraHost("web", netip.MustParseAddr("192.168.0.1")))
 	assert.NilError(t, err)
 	defer func() {
 		assert.Check(t, sb.Delete(context.Background()))
@@ -1231,7 +1230,7 @@ func externalKeyTest(t *testing.T, reexec bool) {
 		libnetwork.OptionHostname("test"),
 		libnetwork.OptionDomainname("example.com"),
 		libnetwork.OptionUseExternalKey(),
-		libnetwork.OptionExtraHost("web", "192.168.0.1"))
+		libnetwork.OptionExtraHost("web", netip.MustParseAddr("192.168.0.1")))
 	assert.NilError(t, err)
 	defer func() {
 		assert.Check(t, cnt.Delete(context.Background()))
@@ -1264,7 +1263,7 @@ func externalKeyTest(t *testing.T, reexec bool) {
 	assert.NilError(t, err, "Failed to create new osl sandbox")
 	defer func() {
 		if err := extOsBox.Destroy(); err != nil {
-			log.G(context.TODO()).Warnf("Failed to remove os sandbox: %v", err)
+			log.G(t.Context()).Warnf("Failed to remove os sandbox: %v", err)
 		}
 	}()
 

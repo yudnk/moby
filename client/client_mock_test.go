@@ -1,23 +1,48 @@
 package client
 
 import (
-	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/moby/moby/api/types/common"
 )
 
-// transportFunc allows us to inject a mock transport for testing. We define it
-// here so we can detect the tlsconfig and return nil for only this type.
-type transportFunc func(*http.Request) (*http.Response, error)
+// defaultAPIPath is the API path prefix for the default API version used.
+const defaultAPIPath = "/v" + MaxAPIVersion
 
-func (tf transportFunc) RoundTrip(req *http.Request) (*http.Response, error) {
-	return tf(req)
+// assertRequest checks for the request method and path. If the expected
+// path does not contain a version prefix, it is prefixed with the current API
+// version.
+func assertRequest(req *http.Request, expMethod string, expectedPath string) error {
+	if !strings.HasPrefix(expectedPath, "/v1.") {
+		expectedPath = defaultAPIPath + expectedPath
+	}
+	if !strings.HasPrefix(req.URL.Path, expectedPath) {
+		return fmt.Errorf("expected URL '%s', got '%s'", expectedPath, req.URL.Path)
+	}
+	if req.Method != expMethod {
+		return fmt.Errorf("expected %s method, got %s", expMethod, req.Method)
+	}
+	return nil
 }
 
-func transportEnsureBody(f transportFunc) transportFunc {
+func assertRequestWithQuery(req *http.Request, expMethod string, expectedPath string, expectedQuery string) error {
+	if err := assertRequest(req, expMethod, expectedPath); err != nil {
+		return err
+	}
+	q := req.URL.Query().Encode()
+	if q != expectedQuery {
+		return fmt.Errorf("expected query '%s', got '%s'", expectedQuery, q)
+	}
+	return nil
+}
+
+// ensureBody makes sure the response has a Body, using [http.NoBody] if
+// none is present, and returns it as a testRoundTripper.
+func ensureBody(f func(req *http.Request) (*http.Response, error)) testRoundTripper {
 	return func(req *http.Request) (*http.Response, error) {
 		resp, err := f(req)
 		if resp != nil && resp.Body == nil {
@@ -27,39 +52,49 @@ func transportEnsureBody(f transportFunc) transportFunc {
 	}
 }
 
-func newMockClient(doer func(*http.Request) (*http.Response, error)) *http.Client {
-	return &http.Client{
-		// Some tests return a response with a nil body, this is incorrect semantically and causes a panic with wrapper transports (such as otelhttp's)
-		// Wrap the doer to ensure a body is always present even if it is empty.
-		Transport: transportEnsureBody(transportFunc(doer)),
-	}
+// WithMockClient is a test helper that allows you to inject a mock client for testing.
+func WithMockClient(doer func(*http.Request) (*http.Response, error)) Opt {
+	return WithHTTPClient(&http.Client{
+		Transport: ensureBody(doer),
+	})
 }
 
 func errorMock(statusCode int, message string) func(req *http.Request) (*http.Response, error) {
-	return func(req *http.Request) (*http.Response, error) {
-		header := http.Header{}
-		header.Set("Content-Type", "application/json")
-
-		body, err := json.Marshal(&common.ErrorResponse{
-			Message: message,
-		})
-		if err != nil {
-			return nil, err
-		}
-
-		return &http.Response{
-			StatusCode: statusCode,
-			Body:       io.NopCloser(bytes.NewReader(body)),
-			Header:     header,
-		}, nil
-	}
+	return mockJSONResponse(statusCode, nil, common.ErrorResponse{
+		Message: message,
+	})
 }
 
-func plainTextErrorMock(statusCode int, message string) func(req *http.Request) (*http.Response, error) {
+func mockJSONResponse[T any](statusCode int, headers http.Header, resp T) func(req *http.Request) (*http.Response, error) {
+	respBody, err := json.Marshal(&resp)
+	if err != nil {
+		panic(err)
+	}
+	hdr := make(http.Header)
+	if headers != nil {
+		hdr = headers.Clone()
+	}
+	hdr.Set("Content-Type", "application/json")
+	return mockResponse(statusCode, hdr, string(respBody))
+}
+
+func mockResponse(statusCode int, headers http.Header, respBody string) func(req *http.Request) (*http.Response, error) {
+	if headers == nil {
+		headers = make(http.Header)
+	}
+	var body io.ReadCloser
+	if respBody == "" {
+		body = http.NoBody
+	} else {
+		body = io.NopCloser(strings.NewReader(respBody))
+	}
 	return func(req *http.Request) (*http.Response, error) {
 		return &http.Response{
+			Status:     fmt.Sprintf("%d %s", statusCode, http.StatusText(statusCode)),
 			StatusCode: statusCode,
-			Body:       io.NopCloser(bytes.NewReader([]byte(message))),
+			Header:     headers,
+			Body:       body,
+			Request:    req,
 		}, nil
 	}
 }

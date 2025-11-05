@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/netip"
+	"slices"
 	"strings"
 
 	"github.com/containerd/log"
@@ -14,7 +16,6 @@ import (
 	"github.com/moby/moby/v2/daemon/libnetwork/ipams/defaultipam"
 	remoteipam "github.com/moby/moby/v2/daemon/libnetwork/ipams/remote"
 	"github.com/moby/moby/v2/daemon/libnetwork/netlabel"
-	"github.com/moby/moby/v2/daemon/libnetwork/scope"
 	"github.com/moby/moby/v2/pkg/plugingetter"
 	"github.com/moby/swarmkit/v2/api"
 	"github.com/moby/swarmkit/v2/manager/allocator/networkallocator"
@@ -66,7 +67,7 @@ type network struct {
 
 	// pools is used to save the internal poolIDs needed when
 	// releasing the pool.
-	pools map[string]string
+	pools map[netip.Prefix]string
 
 	// endpoints is a map of endpoint IP to the poolID from which it
 	// was allocated.
@@ -80,9 +81,11 @@ type network struct {
 }
 
 type networkDriver struct {
-	driver     driverapi.Driver
-	name       string
-	capability *driverapi.Capability
+	driver driverapi.NetworkAllocator // driver is nil when isNodeLocal == true
+	name   string
+	// isNodeLocal indicates whether that driver is locally-managed or requires
+	// global resources allocation.
+	isNodeLocal bool
 }
 
 // NewAllocator returns a new NetworkAllocator handle
@@ -95,7 +98,7 @@ func (p *Provider) NewAllocator(netConfig *networkallocator.Config) (networkallo
 		pg:       p.pg,
 	}
 
-	for ntype, i := range initializers {
+	for ntype, i := range globalDrivers {
 		if err := i(&na.networkRegistry); err != nil {
 			return nil, fmt.Errorf("failed to register %q network driver: %w", ntype, err)
 		}
@@ -129,7 +132,7 @@ func (na *cnmNetworkAllocator) Allocate(n *api.Network) error {
 	nw := &network{
 		nw:          n,
 		endpoints:   make(map[string]string),
-		isNodeLocal: d.capability.DataScope == scope.Local,
+		isNodeLocal: d.isNodeLocal,
 	}
 
 	// No swarm-level allocation can be provided by the network driver for
@@ -149,7 +152,7 @@ func (na *cnmNetworkAllocator) Allocate(n *api.Network) error {
 			return errors.Wrapf(err, "failed allocating pools and gateway IP for network %s", n.ID)
 		}
 
-		if err := na.allocateDriverState(n); err != nil {
+		if err := na.allocateDriverState(d, n); err != nil {
 			na.freePools(n, nw.pools)
 			return errors.Wrapf(err, "failed while allocating driver state for network %s", n.ID)
 		}
@@ -706,13 +709,16 @@ func (na *cnmNetworkAllocator) freeDriverState(n *api.Network) error {
 		return err
 	}
 
+	if d.driver == nil {
+		return fmt.Errorf("driver %s was loaded from localDrivers and can't be used to free driver state", d.name)
+	}
+
 	return d.driver.NetworkFree(n.ID)
 }
 
-func (na *cnmNetworkAllocator) allocateDriverState(n *api.Network) error {
-	d, err := na.resolveDriver(n)
-	if err != nil {
-		return err
+func (na *cnmNetworkAllocator) allocateDriverState(d *networkDriver, n *api.Network) error {
+	if d.driver == nil {
+		return fmt.Errorf("driver %s was loaded from localDrivers and can't be used to allocate driver state", d.name)
 	}
 
 	options := make(map[string]string)
@@ -776,20 +782,29 @@ func (na *cnmNetworkAllocator) resolveDriver(n *api.Network) (*networkDriver, er
 		dName = n.Spec.DriverConfig.Name
 	}
 
-	d, drvcap := na.networkRegistry.Driver(dName)
-	if d == nil {
-		err := na.loadDriver(dName)
-		if err != nil {
-			return nil, err
-		}
-
-		d, drvcap = na.networkRegistry.Driver(dName)
-		if d == nil {
-			return nil, fmt.Errorf("could not resolve network driver %s", dName)
-		}
+	if slices.Contains(localDrivers, dName) {
+		return &networkDriver{name: dName, isNodeLocal: true}, nil
 	}
 
-	return &networkDriver{driver: d, capability: &drvcap, name: dName}, nil
+	if na.networkRegistry.HasDriverOrNwAllocator(dName) {
+		if nwAlloc := na.networkRegistry.NetworkAllocator(dName); nwAlloc != nil {
+			return &networkDriver{driver: nwAlloc, name: dName}, nil
+		}
+		return &networkDriver{name: dName, isNodeLocal: true}, nil
+	}
+
+	if err := na.loadDriver(dName); err != nil {
+		return nil, err
+	}
+
+	if na.networkRegistry.HasDriverOrNwAllocator(dName) {
+		if nwAlloc := na.networkRegistry.NetworkAllocator(dName); nwAlloc != nil {
+			return &networkDriver{driver: nwAlloc, name: dName}, nil
+		}
+		return &networkDriver{name: dName, isNodeLocal: true}, nil
+	}
+
+	return nil, fmt.Errorf("network driver %s not found", dName)
 }
 
 func (na *cnmNetworkAllocator) loadDriver(name string) error {
@@ -820,7 +835,7 @@ func (na *cnmNetworkAllocator) resolveIPAM(n *api.Network) (ipamapi.Ipam, string
 	return ipam, dName, dOptions, nil
 }
 
-func (na *cnmNetworkAllocator) freePools(n *api.Network, pools map[string]string) error {
+func (na *cnmNetworkAllocator) freePools(n *api.Network, pools map[netip.Prefix]string) error {
 	ipam, _, _, err := na.resolveIPAM(n)
 	if err != nil {
 		return errors.Wrapf(err, "failed to resolve IPAM while freeing pools for network %s", n.ID)
@@ -830,9 +845,14 @@ func (na *cnmNetworkAllocator) freePools(n *api.Network, pools map[string]string
 	return nil
 }
 
-func releasePools(ipam ipamapi.Ipam, icList []*api.IPAMConfig, pools map[string]string) {
+func releasePools(ipam ipamapi.Ipam, icList []*api.IPAMConfig, pools map[netip.Prefix]string) {
 	for _, ic := range icList {
-		if err := ipam.ReleaseAddress(pools[ic.Subnet], net.ParseIP(ic.Gateway)); err != nil {
+		subnet, err := netip.ParsePrefix(ic.Subnet)
+		if err != nil {
+			log.G(context.TODO()).WithError(err).Errorf("Failed to parse subnet %q when releasing pools", ic.Subnet)
+			continue
+		}
+		if err := ipam.ReleaseAddress(pools[subnet], net.ParseIP(ic.Gateway)); err != nil {
 			log.G(context.TODO()).WithError(err).Errorf("Failed to release address %s", ic.Subnet)
 		}
 	}
@@ -844,7 +864,7 @@ func releasePools(ipam ipamapi.Ipam, icList []*api.IPAMConfig, pools map[string]
 	}
 }
 
-func (na *cnmNetworkAllocator) allocatePools(n *api.Network) (map[string]string, error) {
+func (na *cnmNetworkAllocator) allocatePools(n *api.Network) (map[netip.Prefix]string, error) {
 	ipam, dName, dOptions, err := na.resolveIPAM(n)
 	if err != nil {
 		return nil, err
@@ -857,7 +877,7 @@ func (na *cnmNetworkAllocator) allocatePools(n *api.Network) (map[string]string,
 		return nil, err
 	}
 
-	pools := make(map[string]string)
+	pools := make(map[netip.Prefix]string)
 
 	var ipamConfigs []*api.IPAMConfig
 
@@ -894,7 +914,7 @@ func (na *cnmNetworkAllocator) allocatePools(n *api.Network) (map[string]string,
 			releasePools(ipam, ipamConfigs[:i], pools)
 			return nil, err
 		}
-		pools[alloc.Pool.String()] = alloc.PoolID
+		pools[alloc.Pool] = alloc.PoolID
 
 		// The IPAM contract allows the IPAM driver to autonomously
 		// provide a network gateway in response to the pool request.
@@ -929,7 +949,10 @@ func (na *cnmNetworkAllocator) allocatePools(n *api.Network) (map[string]string,
 			}
 		}
 
-		if ic.Subnet == "" {
+		// The IPAM config contain an unspecified subnet if a network with a specific prefix size
+		// was requested from the default pools. Therefore it's important to update the value in the
+		// config with the actual allocated subnet if available.
+		if alloc.Pool.String() != "" {
 			ic.Subnet = alloc.Pool.String()
 		}
 
@@ -966,8 +989,8 @@ func (na *cnmNetworkAllocator) IsVIPOnIngressNetwork(vip *api.Endpoint_VirtualIP
 // IsBuiltInDriver returns whether the passed driver is an internal network driver
 func IsBuiltInDriver(name string) bool {
 	n := strings.ToLower(name)
-	_, ok := initializers[n]
-	return ok
+	_, isGlobal := globalDrivers[n]
+	return isGlobal || slices.Contains(localDrivers, n)
 }
 
 // setIPAMSerialAlloc sets the ipam allocation method to serial

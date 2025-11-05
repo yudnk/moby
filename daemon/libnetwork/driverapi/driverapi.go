@@ -13,16 +13,6 @@ const NetworkPluginEndpointType = "NetworkDriver"
 
 // Driver is an interface that every plugin driver needs to implement.
 type Driver interface {
-	// NetworkAllocate invokes the driver method to allocate network
-	// specific resources passing network id and network specific config.
-	// It returns a key,value pair of network specific driver allocations
-	// to the caller.
-	NetworkAllocate(nid string, options map[string]string, ipV4Data, ipV6Data []IPAMData) (map[string]string, error)
-
-	// NetworkFree invokes the driver method to free network specific resources
-	// associated with a given network id.
-	NetworkFree(nid string) error
-
 	// CreateNetwork invokes the driver method to create a network
 	// passing the network id and network specific config. The
 	// config mechanism will eventually be replaced with labels
@@ -64,6 +54,23 @@ type Driver interface {
 	IsBuiltIn() bool
 }
 
+// NetworkAllocator is a special kind of network driver used by cnmallocator to
+// allocate resources inside a Swarm cluster.
+type NetworkAllocator interface {
+	// NetworkAllocate invokes the driver method to allocate network
+	// specific resources passing network id and network specific config.
+	// It returns a key,value pair of network specific driver allocations
+	// to the caller.
+	NetworkAllocate(nid string, options map[string]string, ipV4Data, ipV6Data []IPAMData) (map[string]string, error)
+
+	// NetworkFree invokes the driver method to free network specific resources
+	// associated with a given network id.
+	NetworkFree(nid string) error
+
+	// IsBuiltIn returns true if it is a built-in driver
+	IsBuiltIn() bool
+}
+
 // TableWatcher is an optional interface for a network driver.
 type TableWatcher interface {
 	// EventNotify notifies the driver when a CRUD operation has
@@ -98,6 +105,15 @@ type ExtConner interface {
 	// with that endpoint's id in eid, and empty gateway ids (even if another
 	// is present and will shortly be selected as the gateway).
 	ProgramExternalConnectivity(ctx context.Context, nid, eid string, gw4Id, gw6Id string) error
+}
+
+// IPv6Releaser is an optional interface for a network driver.
+type IPv6Releaser interface {
+	// ReleaseIPv6 tells the driver that an endpoint has no IPv6 address, even
+	// if the options passed to Driver.CreateEndpoint specified an address. This
+	// happens when, for example, sysctls applied after configuring the interface
+	// disable IPv6.
+	ReleaseIPv6(ctx context.Context, nid, eid string) error
 }
 
 // GwAllocChecker is an optional interface for a network driver.
@@ -179,6 +195,14 @@ type JoinInfo interface {
 	// DisableGatewayService tells libnetwork not to provide Default GW for the container
 	DisableGatewayService()
 
+	// ForceGw4 may be called by a driver to indicate that, even if it has not set up
+	// an IPv4 gateway, libnet should assume the endpoint has external IPv4 connectivity.
+	ForceGw4()
+
+	// ForceGw6 may be called by a driver to indicate that, even if it has not set up
+	// an IPv6 gateway, libnet should assume the endpoint has external IPv6 connectivity.
+	ForceGw6()
+
 	// AddTableEntry adds a table entry to the gossip layer
 	// passing the table name, key and an opaque value.
 	AddTableEntry(tableName string, key string, value []byte) error
@@ -187,6 +211,7 @@ type JoinInfo interface {
 // Registerer provides a way for network drivers to be dynamically registered.
 type Registerer interface {
 	RegisterDriver(name string, driver Driver, capability Capability) error
+	RegisterNetworkAllocator(name string, driver NetworkAllocator) error
 }
 
 // Capability represents the high level capabilities of the drivers which libnetwork can make use of

@@ -22,6 +22,62 @@ keywords: "API, Docker, rcli, REST, documentation"
   saved.
 * `POST /images/load` now accepts multiple `platform` query-arguments
   to allow selecting which platform(s) of a multi-platform image to load.
+* `GET /events` no longer includes the deprecated `status`, `id`, and `from`
+  fields. These fields were removed in API v1.22, but still included
+  in the response.
+* `GET /networks/{id}` now includes a `Status` field, providing statistics
+  about IPAM allocations for the subnets assigned to the network.
+* Deprecated: the Engine was automatically backfilling empty `PortBindings` lists with
+  a PortBinding with an empty HostIP and HostPort when calling `POST /containers/{id}/start`.
+  This behavior is now deprecated, and a warning is returned by `POST /containers/create`.
+  The next API version will drop empty `PortBindings` list altogether.
+* `GET /images/{name}/json` now omits the following `Config` fields when
+  not set, to closer align with the implementation of the [OCI Image Specification](https://github.com/opencontainers/image-spec/blob/v1.1.1/specs-go/v1/config.go#L23-L62)
+  `Cmd`, `Entrypoint`, `Env`, `Labels`, `OnBuild`, `User`, `Volumes`, and `WorkingDir`.
+* `GET /images/{name}/json` now omits the following fields if their value
+  is empty: `Parent`, `Comment`, `DockerVersion`, `Author`. The `Parent`
+  and `DockerVersion` fields were set by the legacy builder, and are no
+  longer set when using BuildKit. The `Author` field is set through the
+  `MAINTAINER` Dockerfile instruction, which is deprecated, and the `Comment`
+  field is option, and may not be set depending on how the image was created.
+* `GET /container/{id}/json` now omits `Config.OnBuild` if its value is empty.
+* `GET /containers/{id}/json`: the `NetworkSettings` no longer returns the deprecated
+  `Bridge`, `HairpinMode`, `LinkLocalIPv6Address`, `LinkLocalIPv6PrefixLen`,
+  `SecondaryIPAddresses`, `SecondaryIPv6Addresses`, `EndpointID`, `Gateway`,
+  `GlobalIPv6Address`, `GlobalIPv6PrefixLen`, `IPAddress`, `IPPrefixLen`,
+  `IPv6Gateway`, and `MacAddress` fields. These fields were deprecated in
+  API v1.21 (docker v1.9.0) but kept around for backward compatibility.
+* Removed the `KernelMemoryTCP` field from the `POST /containers/{id}/update` and
+  `GET /containers/{id}/json` endpoints, any value it is set to will be ignored
+  on API version `v1.52` and up. Older API versions still accept this field, but
+  may take no effect, depending on the kernel version and OCI runtime in use.
+* Removed the `KernelMemoryTCP` field from the `GET /info` endpoint.
+* `GET /events` supports content-type negotiation and can produce either `application/x-ndjson` 
+  (Newline delimited JSON object stream) or `application/json-seq` (RFC7464).
+* `POST /containers/create` no longer supports configuring a container-wide MAC address
+  via the container's `Config.MacAddress` field. A container's MAC address can now only 
+  be configured via endpoint settings when connecting to a network.
+* `GET /services` now returns `SwapBytes` and `MemorySwappiness` fields as part
+  of the `Resource` requirements.
+* `GET /services/{id}` now returns `SwapBytes` and `MemorySwappiness` fields as
+  part of the `Resource` requirements.
+* `POST /services/create` now accepts `SwapBytes` and `MemorySwappiness` fields
+  as part of the `Resource` requirements.
+* `POST /services/{id}/update` now accepts `SwapBytes` and `MemorySwappiness`
+  fields as part of the `Resource` requirements.
+* `GET /tasks` now  returns `SwapBytes` and `MemorySwappiness` fields as part
+  of the `Resource` requirements.
+* `GET /tasks/{id}` now  returns `SwapBytes` and `MemorySwappiness` fields as
+  part of the `Resource` requirements.
+* `GET /containers/{id}/stats` now returns an `os_type` field to allow platform-
+  specific handling of the stats.
+* `GET /system/df` returns `ImagesUsage`, `ContainersUsage`, `VolumesUsage`, and
+  `BuildCacheUsage` fields with brief system disk usage data for each system object type.
+  The endpoint supports the `?verbose=1` query to return verbose system disk usage information.
+* Deprecated: `GET /system/df` response fields `LayersSize`, `Images`, `Containers`,
+  `Volumes`, and `BuildCache` are deprecated in favor of the type specific usage fields.
+  The legacy fields will not be populated for new API versions that specify the `verbose`
+  query.
 
 ## v1.51 API changes
 
@@ -30,6 +86,22 @@ keywords: "API, Docker, rcli, REST, documentation"
 * `GET /images/json` now sets the value of `Containers` field for all images
   to the count of containers using the image.
   This field was previously always -1.
+* Deprecated: The field `NetworkSettings.Bridge` returned by `GET /containers/{id}/json`
+  is deprecated and will be removed in the next API version.
+* Deprecated: The field `KernelMemoryTCP` as part of `POST /containers/{id}/update`
+  and returned by `GET /containers/{id}/json` is deprecated and will be removed
+  in the next API version.
+* Deprecated: The field `KernelMemoryTCP` as part of `GET /info` is deprecated
+  and will be removed in the next API version.
+* Deprecated: the `Parent` and `DockerVersion` fields returned by the
+  `GET /images/{name}/json` endpoint are deprecated. These fields are set by
+  the legacy builder, and are no longer set when using BuildKit. The API
+  continues returning these fields when set for informational purposes, but
+  they should not be depended on as they will be omitted once the legacy builder
+  is removed.
+* Deprecated: the `Config.DockerVersion` field returned by the `GET /plugins`
+  and `GET /images/{name}/json` endpoints is deprecated. The field is no
+  longer set, and is omitted when empty.
 
 ## v1.50 API changes
 
@@ -91,6 +163,8 @@ keywords: "API, Docker, rcli, REST, documentation"
   `GET /info` response are now always be `false` and will be omitted in API
   v1.49. The netfilter module is now loaded on-demand, and no longer during
   daemon startup, making these fields obsolete.
+* Deprecated: The `POST /build/prune` `keep-storage` query parameter has been
+  renamed to `reserved-space`. `keep-storage` support will be removed in API v1.52.
 * `GET /images/{name}/history` now supports a `platform` parameter (JSON
   encoded OCI Platform type) that allows to specify a platform to show the
   history of.
@@ -145,7 +219,7 @@ keywords: "API, Docker, rcli, REST, documentation"
   `GET /debug/pprof/profile`, `GET /debug/pprof/symbol`, `GET /debug/pprof/trace`,
   `GET /debug/pprof/{name}`) are now also accessible through the versioned-API
   paths (`/v<API-version>/<endpoint>`).
-* `POST /build/prune` renames `keep-bytes` to `reserved-space` and now supports
+* `POST /build/prune` renames `keep-storage` to `reserved-space` and now supports
   additional prune parameters `max-used-space` and `min-free-space`.
 * `GET /containers/json` now returns an `ImageManifestDescriptor` field
   matching the same field in `/containers/{name}/json`.
@@ -984,9 +1058,10 @@ are not part of the underlying image's Config, and deprecated:
 * `GET /containers/(name)/json` now accepts a `size` parameter. Setting this parameter to '1' returns container size information in the `SizeRw` and `SizeRootFs` fields.
 * `GET /containers/(name)/json` now returns a `NetworkSettings.Networks` field,
   detailing network settings per network. This field deprecates the
-  `NetworkSettings.Gateway`, `NetworkSettings.IPAddress`,
-  `NetworkSettings.IPPrefixLen`, and `NetworkSettings.MacAddress` fields, which
-  are still returned for backward-compatibility, but will be removed in a future version.
+  `NetworkSettings.EndpointID`, `NetworkSettings.Gateway`, `NetworkSettings.GlobalIPv6Address`,
+  `NetworkSettings.GlobalIPv6PrefixLen` `NetworkSettings.IPAddress`, `NetworkSettings.IPPrefixLen`,
+  `NetworkSettings.IPv6Gateway`, `NetworkSettings.MacAddress` fields, which are
+  still returned for backward-compatibility, but will be removed in a future version.
 * `GET /exec/(id)/json` now returns a `NetworkSettings.Networks` field,
   detailing networksettings per network. This field deprecates the
   `NetworkSettings.Gateway`, `NetworkSettings.IPAddress`,

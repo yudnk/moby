@@ -7,12 +7,14 @@ import (
 	"strconv"
 
 	"github.com/containerd/log"
-	"github.com/moby/moby/api/types/filters"
 	"github.com/moby/moby/api/types/registry"
 	types "github.com/moby/moby/api/types/swarm"
-	"github.com/moby/moby/api/types/versions"
+	"github.com/moby/moby/v2/daemon/internal/compat"
+	"github.com/moby/moby/v2/daemon/internal/filters"
+	"github.com/moby/moby/v2/daemon/internal/versions"
 	"github.com/moby/moby/v2/daemon/server/backend"
 	"github.com/moby/moby/v2/daemon/server/httputils"
+	"github.com/moby/moby/v2/daemon/server/swarmbackend"
 	"github.com/moby/moby/v2/errdefs"
 	"github.com/pkg/errors"
 )
@@ -81,7 +83,7 @@ func (sr *swarmRouter) updateCluster(ctx context.Context, w http.ResponseWriter,
 		return errdefs.InvalidParameter(err)
 	}
 
-	var flags types.UpdateFlags
+	var flags swarmbackend.UpdateFlags
 
 	if value := r.URL.Query().Get("rotateWorkerToken"); value != "" {
 		rot, err := strconv.ParseBool(value)
@@ -165,10 +167,17 @@ func (sr *swarmRouter) getServices(ctx context.Context, w http.ResponseWriter, r
 		}
 	}
 
-	services, err := sr.backend.GetServices(types.ServiceListOptions{Filters: filter, Status: status})
+	services, err := sr.backend.GetServices(swarmbackend.ServiceListOptions{Filters: filter, Status: status})
 	if err != nil {
 		log.G(ctx).WithContext(ctx).WithError(err).Debug("Error getting services")
 		return err
+	}
+	if versions.LessThan(cliVersion, "1.25") {
+		legacyResponse := make([]*compat.Wrapper, 0, len(services))
+		for _, s := range services {
+			legacyResponse = append(legacyResponse, backFillLegacyNetwork(s))
+		}
+		return httputils.WriteJSON(w, http.StatusOK, legacyResponse)
 	}
 
 	return httputils.WriteJSON(w, http.StatusOK, services)
@@ -200,11 +209,29 @@ func (sr *swarmRouter) getService(ctx context.Context, w http.ResponseWriter, r 
 		return err
 	}
 
+	cliVersion := httputils.VersionFromContext(ctx)
+	if versions.LessThan(cliVersion, "1.25") {
+		return httputils.WriteJSON(w, http.StatusOK, backFillLegacyNetwork(service))
+	}
+
 	return httputils.WriteJSON(w, http.StatusOK, service)
 }
 
+// serviceWithLegacy is used to unmarshal legacy requests that contain
+// the ServiceSpec.Networks field.
+type serviceWithLegacy struct {
+	types.ServiceSpec
+
+	// Networks specifies which networks the service should attach to.
+	//
+	// This field was deprecated in API v1.25, with the deprecation notice
+	// updated in API v1.44. We only consider this field on API < v1.44,
+	// and if the replacement TaskSpec.Networks is not set.
+	Networks []types.NetworkAttachmentConfig `json:",omitempty"`
+}
+
 func (sr *swarmRouter) createService(ctx context.Context, w http.ResponseWriter, r *http.Request, vars map[string]string) error {
-	var service types.ServiceSpec
+	var service serviceWithLegacy
 	if err := httputils.ReadJSON(r, &service); err != nil {
 		return err
 	}
@@ -219,7 +246,8 @@ func (sr *swarmRouter) createService(ctx context.Context, w http.ResponseWriter,
 		adjustForAPIVersion(v, &service)
 	}
 
-	resp, err := sr.backend.CreateService(service, encodedAuth, queryRegistry)
+	serviceSpec := service.ServiceSpec
+	resp, err := sr.backend.CreateService(serviceSpec, encodedAuth, queryRegistry)
 	if err != nil {
 		log.G(ctx).WithFields(log.Fields{
 			"error":        err,
@@ -232,7 +260,7 @@ func (sr *swarmRouter) createService(ctx context.Context, w http.ResponseWriter,
 }
 
 func (sr *swarmRouter) updateService(ctx context.Context, w http.ResponseWriter, r *http.Request, vars map[string]string) error {
-	var service types.ServiceSpec
+	var service serviceWithLegacy
 	if err := httputils.ReadJSON(r, &service); err != nil {
 		return err
 	}
@@ -244,7 +272,7 @@ func (sr *swarmRouter) updateService(ctx context.Context, w http.ResponseWriter,
 		return errdefs.InvalidParameter(err)
 	}
 
-	var flags types.ServiceUpdateOptions
+	var flags swarmbackend.ServiceUpdateOptions
 
 	// Get returns "" if the header does not exist
 	flags.EncodedRegistryAuth = r.Header.Get(registry.AuthHeader)
@@ -258,7 +286,8 @@ func (sr *swarmRouter) updateService(ctx context.Context, w http.ResponseWriter,
 		adjustForAPIVersion(v, &service)
 	}
 
-	resp, err := sr.backend.UpdateService(vars["id"], version, service, flags, queryRegistry)
+	serviceSpec := service.ServiceSpec
+	resp, err := sr.backend.UpdateService(vars["id"], version, serviceSpec, flags, queryRegistry)
 	if err != nil {
 		log.G(ctx).WithContext(ctx).WithFields(log.Fields{
 			"error":      err,
@@ -313,7 +342,7 @@ func (sr *swarmRouter) getNodes(ctx context.Context, w http.ResponseWriter, r *h
 		return err
 	}
 
-	nodes, err := sr.backend.GetNodes(types.NodeListOptions{Filters: filter})
+	nodes, err := sr.backend.GetNodes(swarmbackend.NodeListOptions{Filters: filter})
 	if err != nil {
 		log.G(ctx).WithContext(ctx).WithError(err).Debug("Error getting nodes")
 		return err
@@ -384,7 +413,7 @@ func (sr *swarmRouter) getTasks(ctx context.Context, w http.ResponseWriter, r *h
 		return err
 	}
 
-	tasks, err := sr.backend.GetTasks(types.TaskListOptions{Filters: filter})
+	tasks, err := sr.backend.GetTasks(swarmbackend.TaskListOptions{Filters: filter})
 	if err != nil {
 		log.G(ctx).WithContext(ctx).WithError(err).Debug("Error getting tasks")
 		return err
@@ -415,7 +444,7 @@ func (sr *swarmRouter) getSecrets(ctx context.Context, w http.ResponseWriter, r 
 		return err
 	}
 
-	secrets, err := sr.backend.GetSecrets(types.SecretListOptions{Filters: filters})
+	secrets, err := sr.backend.GetSecrets(swarmbackend.SecretListOptions{Filters: filters})
 	if err != nil {
 		return err
 	}
@@ -486,7 +515,7 @@ func (sr *swarmRouter) getConfigs(ctx context.Context, w http.ResponseWriter, r 
 		return err
 	}
 
-	configs, err := sr.backend.GetConfigs(types.ConfigListOptions{Filters: filters})
+	configs, err := sr.backend.GetConfigs(swarmbackend.ConfigListOptions{Filters: filters})
 	if err != nil {
 		return err
 	}
@@ -547,4 +576,23 @@ func (sr *swarmRouter) updateConfig(ctx context.Context, w http.ResponseWriter, 
 
 	id := vars["id"]
 	return sr.backend.UpdateConfig(id, version, config)
+}
+
+func backFillLegacyNetwork(s types.Service) *compat.Wrapper {
+	var opts []compat.Option
+	if len(s.Spec.TaskTemplate.Networks) > 0 {
+		opts = append(opts, compat.WithExtraFields(map[string]any{
+			"Spec": map[string]any{
+				"Networks": s.Spec.TaskTemplate.Networks,
+			},
+		}))
+	}
+	if s.PreviousSpec != nil && len(s.PreviousSpec.TaskTemplate.Networks) > 0 {
+		opts = append(opts, compat.WithExtraFields(map[string]any{
+			"PreviousSpec": map[string]any{
+				"Networks": s.PreviousSpec.TaskTemplate.Networks,
+			},
+		}))
+	}
+	return compat.Wrap(s, opts...)
 }

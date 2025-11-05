@@ -3,6 +3,8 @@ package libnetwork
 import (
 	"context"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -10,9 +12,7 @@ import (
 	"github.com/moby/moby/v2/daemon/libnetwork/drivers/bridge"
 	"github.com/moby/moby/v2/daemon/libnetwork/internal/nftables"
 	"github.com/moby/moby/v2/daemon/libnetwork/iptables"
-	"github.com/moby/moby/v2/daemon/libnetwork/netlabel"
-	"github.com/moby/moby/v2/daemon/libnetwork/options"
-	"github.com/moby/moby/v2/internal/testutils/netnsutils"
+	"github.com/moby/moby/v2/internal/testutil/netnsutils"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 	"gotest.tools/v3/golden"
@@ -26,15 +26,19 @@ const (
 )
 
 func TestUserChain(t *testing.T) {
+	const testName = "TestUserChain"
 	iptable4 := iptables.GetIptable(iptables.IPv4)
 	iptable6 := iptables.GetIptable(iptables.IPv6)
 
 	res := icmd.RunCommand("iptables", "--version")
 	assert.NilError(t, res.Error)
 	noChainErr := "No chain/target/match by that name"
-	if strings.Contains(res.Combined(), "nf_tables") {
-		// For a non-existent chain, iptables-nft "-S <chain>" reports:
-		//  ip6tables v1.8.9 (nf_tables): chain `<chain>' in table `filter' is incompatible, use 'nft' tool.
+	if strings.Contains(res.Combined(), "nf_tables") && versionLt(t, res.Combined(), 1, 8, 10) {
+		// Prior to v1.8.10, iptables-nft "-S <chain>" reports the following for a non-existent chain:
+		//
+		//   ip6tables v1.8.9 (nf_tables): chain `<chain>' in table `filter' is incompatible, use 'nft' tool.
+		//
+		// This was fixed in this commit: https://git.netfilter.org/iptables/commit/?id=82ccfb488eeac5507471099b9b4e6d136cc06e3b
 		noChainErr = "incompatible, use 'nft' tool"
 	}
 
@@ -64,11 +68,9 @@ func TestUserChain(t *testing.T) {
 			c, err := New(
 				context.Background(),
 				config.OptionDataDir(t.TempDir()),
-				config.OptionDriverConfig("bridge", map[string]any{
-					netlabel.GenericData: options.Generic{
-						"EnableIPTables":  tc.iptables,
-						"EnableIP6Tables": tc.iptables,
-					},
+				config.OptionBridgeConfig(bridge.Configuration{
+					EnableIPTables:  tc.iptables,
+					EnableIP6Tables: tc.iptables,
 				}))
 			assert.NilError(t, err)
 			defer c.Stop()
@@ -76,14 +78,14 @@ func TestUserChain(t *testing.T) {
 
 			// init. condition
 			golden.Assert(t, getRules(t, iptable4, fwdChainName),
-				fmt.Sprintf("TestUserChain_iptables-%v_append-%v_fwdinit4", tc.iptables, tc.append))
+				fmt.Sprintf("%s/iptables-%v_append-%v_fwdinit4.golden", testName, tc.iptables, tc.append))
 			golden.Assert(t, getRules(t, iptable6, fwdChainName),
-				fmt.Sprintf("TestUserChain_iptables-%v_append-%v_fwdinit6", tc.iptables, tc.append))
+				fmt.Sprintf("%s/iptables-%v_append-%v_fwdinit6.golden", testName, tc.iptables, tc.append))
 			if tc.iptables {
 				golden.Assert(t, getRules(t, iptable4, bridge.DockerForwardChain),
-					fmt.Sprintf("TestUserChain_iptables-%v_append-%v_dockerfwdinit4", tc.iptables, tc.append))
+					fmt.Sprintf("%s/iptables-%v_append-%v_dockerfwdinit4.golden", testName, tc.iptables, tc.append))
 				golden.Assert(t, getRules(t, iptable6, bridge.DockerForwardChain),
-					fmt.Sprintf("TestUserChain_iptables-%v_append-%v_dockerfwdinit6", tc.iptables, tc.append))
+					fmt.Sprintf("%s/iptables-%v_append-%v_dockerfwdinit6.golden", testName, tc.iptables, tc.append))
 			} else {
 				assert.Check(t, !iptables.GetIptable(iptables.IPv4).ExistChain(bridge.DockerForwardChain, fwdChainName),
 					"Chain %s should not exist", bridge.DockerForwardChain)
@@ -98,14 +100,14 @@ func TestUserChain(t *testing.T) {
 			c.setupUserChains()
 
 			golden.Assert(t, getRules(t, iptable4, fwdChainName),
-				fmt.Sprintf("TestUserChain_iptables-%v_append-%v_fwdafter4", tc.iptables, tc.append))
+				fmt.Sprintf("%s/iptables-%v_append-%v_fwdafter4.golden", testName, tc.iptables, tc.append))
 			golden.Assert(t, getRules(t, iptable6, fwdChainName),
-				fmt.Sprintf("TestUserChain_iptables-%v_append-%v_fwdafter6", tc.iptables, tc.append))
+				fmt.Sprintf("%s/iptables-%v_append-%v_fwdafter6.golden", testName, tc.iptables, tc.append))
 			if tc.iptables {
 				golden.Assert(t, getRules(t, iptable4, bridge.DockerForwardChain),
-					fmt.Sprintf("TestUserChain_iptables-%v_append-%v_dockerfwdafter4", tc.iptables, tc.append))
+					fmt.Sprintf("%s/iptables-%v_append-%v_dockerfwdafter4.golden", testName, tc.iptables, tc.append))
 				golden.Assert(t, getRules(t, iptable6, bridge.DockerForwardChain),
-					fmt.Sprintf("TestUserChain_iptables-%v_append-%v_dockerfwdafter6", tc.iptables, tc.append))
+					fmt.Sprintf("%s/iptables-%v_append-%v_dockerfwdafter6.golden", testName, tc.iptables, tc.append))
 			} else {
 				assert.Check(t, !iptables.GetIptable(iptables.IPv4).ExistChain(bridge.DockerForwardChain, fwdChainName),
 					"Chain %s should not exist", bridge.DockerForwardChain)
@@ -113,9 +115,9 @@ func TestUserChain(t *testing.T) {
 
 			if tc.iptables {
 				golden.Assert(t, getRules(t, iptable4, usrChainName),
-					fmt.Sprintf("TestUserChain_iptables-%v_append-%v_usrafter4", tc.iptables, tc.append))
+					fmt.Sprintf("%s/iptables-%v_append-%v_usrafter4.golden", testName, tc.iptables, tc.append))
 				golden.Assert(t, getRules(t, iptable6, usrChainName),
-					fmt.Sprintf("TestUserChain_iptables-%v_append-%v_usrafter6", tc.iptables, tc.append))
+					fmt.Sprintf("%s/iptables-%v_append-%v_usrafter6.golden", testName, tc.iptables, tc.append))
 			} else {
 				_, err := iptable4.Raw("-S", usrChainName)
 				assert.Check(t, is.ErrorContains(err, noChainErr), "ipv4 chain %v: created unexpectedly", usrChainName)
@@ -143,4 +145,22 @@ func resetIptables(t *testing.T) {
 		assert.Check(t, err)
 		_ = iptable.RemoveExistingChain(usrChainName, iptables.Filter)
 	}
+}
+
+// versionLt returns true if the iptables version returned by `iptables --version`
+// is less than the `<major>.<minor>.<patch>` version passed in as argument.
+func versionLt(t *testing.T, ver string, major, minor, patch int) bool {
+	t.Helper()
+
+	matches := regexp.MustCompile(`iptables v([0-9]+)\.([0-9]+)\.([0-9]+)`).FindStringSubmatch(ver)
+	assert.Assert(t, len(matches) == 4, "could not determine iptables version from %q", ver)
+
+	parsedMajor, err := strconv.Atoi(matches[1])
+	assert.NilError(t, err)
+	parsedMinor, err := strconv.Atoi(matches[2])
+	assert.NilError(t, err)
+	parsedPatch, err := strconv.Atoi(matches[3])
+	assert.NilError(t, err)
+
+	return parsedMajor < major || (parsedMajor == major && parsedMinor < minor) || (parsedMajor == major && parsedMinor == minor && parsedPatch < patch)
 }

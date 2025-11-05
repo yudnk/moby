@@ -15,10 +15,9 @@ import (
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/containerd/platforms"
 	"github.com/moby/go-archive"
-	"github.com/moby/moby/api/types/image"
-	"github.com/moby/moby/v2/daemon/server/backend"
-	"github.com/moby/moby/v2/internal/testutils/labelstore"
-	"github.com/moby/moby/v2/internal/testutils/specialimage"
+	"github.com/moby/moby/v2/daemon/server/imagebackend"
+	"github.com/moby/moby/v2/internal/testutil/labelstore"
+	"github.com/moby/moby/v2/internal/testutil/specialimage"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
@@ -30,7 +29,7 @@ func TestImageLoad(t *testing.T) {
 	linuxArmv5 := ocispec.Platform{OS: "linux", Architecture: "arm", Variant: "v5"}
 	linuxRiscv64 := ocispec.Platform{OS: "linux", Architecture: "riskv64"}
 
-	ctx := namespaces.WithNamespace(context.TODO(), "testing-"+t.Name())
+	ctx := namespaces.WithNamespace(t.Context(), "testing-"+t.Name())
 
 	store, err := local.NewLabeledStore(t.TempDir(), &labelstore.InMemory{})
 	assert.NilError(t, err)
@@ -55,10 +54,10 @@ func TestImageLoad(t *testing.T) {
 
 	cleanup := func(ctx context.Context, t *testing.T) {
 		// Remove all existing images to start fresh
-		images, err := imgSvc.Images(ctx, image.ListOptions{})
+		images, err := imgSvc.Images(ctx, imagebackend.ListOptions{})
 		assert.NilError(t, err)
 		for _, img := range images {
-			_, err := imgSvc.ImageDelete(ctx, img.ID, image.RemoveOptions{PruneChildren: true})
+			_, err := imgSvc.ImageDelete(ctx, img.ID, imagebackend.RemoveOptions{PruneChildren: true})
 			assert.NilError(t, err)
 		}
 
@@ -152,7 +151,7 @@ func TestImageLoad(t *testing.T) {
 
 func verifyImagePlatforms(ctx context.Context, imgSvc *ImageService, imgRef string, expectedPlatforms []ocispec.Platform) error {
 	// get the manifest(s) for the image
-	img, err := imgSvc.ImageInspect(ctx, imgRef, backend.ImageInspectOpts{Manifests: true})
+	img, err := imgSvc.ImageInspect(ctx, imgRef, imagebackend.ImageInspectOpts{Manifests: true})
 	if err != nil {
 		return err
 	}

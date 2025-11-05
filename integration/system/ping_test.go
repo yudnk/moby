@@ -9,9 +9,10 @@ import (
 
 	"github.com/moby/moby/api/types/build"
 	"github.com/moby/moby/api/types/swarm"
-	"github.com/moby/moby/v2/testutil"
-	"github.com/moby/moby/v2/testutil/daemon"
-	"github.com/moby/moby/v2/testutil/request"
+	"github.com/moby/moby/client"
+	"github.com/moby/moby/v2/internal/testutil"
+	"github.com/moby/moby/v2/internal/testutil/daemon"
+	"github.com/moby/moby/v2/internal/testutil/request"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 	"gotest.tools/v3/skip"
@@ -67,29 +68,29 @@ func TestPingSwarmHeader(t *testing.T) {
 
 	t.Run("before swarm init", func(t *testing.T) {
 		ctx := testutil.StartSpan(ctx, t)
-		p, err := apiClient.Ping(ctx)
+		p, err := apiClient.Ping(ctx, client.PingOptions{})
 		assert.NilError(t, err)
 		assert.Equal(t, p.SwarmStatus.NodeState, swarm.LocalNodeStateInactive)
 		assert.Equal(t, p.SwarmStatus.ControlAvailable, false)
 	})
 
-	_, err := apiClient.SwarmInit(ctx, swarm.InitRequest{ListenAddr: "127.0.0.1", AdvertiseAddr: "127.0.0.1:2377"})
+	_, err := apiClient.SwarmInit(ctx, client.SwarmInitOptions{ListenAddr: "127.0.0.1", AdvertiseAddr: "127.0.0.1:2377"})
 	assert.NilError(t, err)
 
 	t.Run("after swarm init", func(t *testing.T) {
 		ctx := testutil.StartSpan(ctx, t)
-		p, err := apiClient.Ping(ctx)
+		p, err := apiClient.Ping(ctx, client.PingOptions{})
 		assert.NilError(t, err)
 		assert.Equal(t, p.SwarmStatus.NodeState, swarm.LocalNodeStateActive)
 		assert.Equal(t, p.SwarmStatus.ControlAvailable, true)
 	})
 
-	err = apiClient.SwarmLeave(ctx, true)
+	_, err = apiClient.SwarmLeave(ctx, client.SwarmLeaveOptions{Force: true})
 	assert.NilError(t, err)
 
 	t.Run("after swarm leave", func(t *testing.T) {
 		ctx := testutil.StartSpan(ctx, t)
-		p, err := apiClient.Ping(ctx)
+		p, err := apiClient.Ping(ctx, client.PingOptions{})
 		assert.NilError(t, err)
 		assert.Equal(t, p.SwarmStatus.NodeState, swarm.LocalNodeStateInactive)
 		assert.Equal(t, p.SwarmStatus.ControlAvailable, false)
@@ -115,7 +116,7 @@ func TestPingBuilderHeader(t *testing.T) {
 			expected = build.BuilderV1
 		}
 
-		p, err := apiClient.Ping(ctx)
+		p, err := apiClient.Ping(ctx, client.PingOptions{})
 		assert.NilError(t, err)
 		assert.Equal(t, p.BuilderVersion, expected)
 	})
@@ -129,7 +130,7 @@ func TestPingBuilderHeader(t *testing.T) {
 		defer d.Stop(t)
 
 		expected := build.BuilderV1
-		p, err := apiClient.Ping(ctx)
+		p, err := apiClient.Ping(ctx, client.PingOptions{})
 		assert.NilError(t, err)
 		assert.Equal(t, p.BuilderVersion, expected)
 	})

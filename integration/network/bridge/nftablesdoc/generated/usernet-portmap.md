@@ -1,3 +1,5 @@
+<!-- This is a generated file; DO NOT EDIT. -->
+
 ## Container on a user-defined network, with a published port
 
 Adding a network running a container with a mapped port, equivalent to:
@@ -41,7 +43,7 @@ The `ip docker-bridges` table is updated as follows:
     	}
     
     	chain nat-OUTPUT {
-    		type nat hook output priority -100; policy accept;
+    		type nat hook output priority dstnat; policy accept;
     		ip daddr != 127.0.0.0/8 fib daddr type local counter jump nat-prerouting-and-output
     	}
     

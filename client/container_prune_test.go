@@ -1,41 +1,33 @@
 package client
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
-	"fmt"
-	"io"
 	"net/http"
-	"strings"
 	"testing"
 
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/moby/moby/api/types/container"
-	"github.com/moby/moby/api/types/filters"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 )
 
 func TestContainersPruneError(t *testing.T) {
-	client := &Client{
-		client:  newMockClient(errorMock(http.StatusInternalServerError, "Server error")),
-		version: "1.25",
-	}
+	client, err := New(WithMockClient(errorMock(http.StatusInternalServerError, "Server error")))
+	assert.NilError(t, err)
 
-	_, err := client.ContainersPrune(context.Background(), filters.Args{})
+	_, err = client.ContainersPrune(context.Background(), ContainerPruneOptions{})
 	assert.Check(t, is.ErrorType(err, cerrdefs.IsInternal))
 }
 
 func TestContainersPrune(t *testing.T) {
-	expectedURL := "/v1.25/containers/prune"
+	const expectedURL = "/containers/prune"
 
 	listCases := []struct {
-		filters             filters.Args
+		filters             Filters
 		expectedQueryParams map[string]string
 	}{
 		{
-			filters: filters.Args{},
+			filters: Filters{},
 			expectedQueryParams: map[string]string{
 				"until":   "",
 				"filter":  "",
@@ -43,7 +35,7 @@ func TestContainersPrune(t *testing.T) {
 			},
 		},
 		{
-			filters: filters.NewArgs(filters.Arg("dangling", "true")),
+			filters: make(Filters).Add("dangling", "true"),
 			expectedQueryParams: map[string]string{
 				"until":   "",
 				"filter":  "",
@@ -51,10 +43,9 @@ func TestContainersPrune(t *testing.T) {
 			},
 		},
 		{
-			filters: filters.NewArgs(
-				filters.Arg("dangling", "true"),
-				filters.Arg("until", "2016-12-15T14:00"),
-			),
+			filters: make(Filters).
+				Add("dangling", "true").
+				Add("until", "2016-12-15T14:00"),
 			expectedQueryParams: map[string]string{
 				"until":   "",
 				"filter":  "",
@@ -62,7 +53,7 @@ func TestContainersPrune(t *testing.T) {
 			},
 		},
 		{
-			filters: filters.NewArgs(filters.Arg("dangling", "false")),
+			filters: make(Filters).Add("dangling", "false"),
 			expectedQueryParams: map[string]string{
 				"until":   "",
 				"filter":  "",
@@ -70,11 +61,10 @@ func TestContainersPrune(t *testing.T) {
 			},
 		},
 		{
-			filters: filters.NewArgs(
-				filters.Arg("dangling", "true"),
-				filters.Arg("label", "label1=foo"),
-				filters.Arg("label", "label2!=bar"),
-			),
+			filters: make(Filters).
+				Add("dangling", "true").
+				Add("label", "label1=foo").
+				Add("label", "label2!=bar"),
 			expectedQueryParams: map[string]string{
 				"until":   "",
 				"filter":  "",
@@ -83,34 +73,25 @@ func TestContainersPrune(t *testing.T) {
 		},
 	}
 	for _, listCase := range listCases {
-		client := &Client{
-			client: newMockClient(func(req *http.Request) (*http.Response, error) {
-				if !strings.HasPrefix(req.URL.Path, expectedURL) {
-					return nil, fmt.Errorf("Expected URL '%s', got '%s'", expectedURL, req.URL)
-				}
-				query := req.URL.Query()
-				for key, expected := range listCase.expectedQueryParams {
-					actual := query.Get(key)
-					assert.Check(t, is.Equal(expected, actual))
-				}
-				content, err := json.Marshal(container.PruneReport{
-					ContainersDeleted: []string{"container_id1", "container_id2"},
-					SpaceReclaimed:    9999,
-				})
-				if err != nil {
-					return nil, err
-				}
-				return &http.Response{
-					StatusCode: http.StatusOK,
-					Body:       io.NopCloser(bytes.NewReader(content)),
-				}, nil
-			}),
-			version: "1.25",
-		}
-
-		report, err := client.ContainersPrune(context.Background(), listCase.filters)
+		client, err := New(WithMockClient(func(req *http.Request) (*http.Response, error) {
+			if err := assertRequest(req, http.MethodPost, expectedURL); err != nil {
+				return nil, err
+			}
+			query := req.URL.Query()
+			for key, expected := range listCase.expectedQueryParams {
+				actual := query.Get(key)
+				assert.Check(t, is.Equal(expected, actual))
+			}
+			return mockJSONResponse(http.StatusOK, nil, container.PruneReport{
+				ContainersDeleted: []string{"container_id1", "container_id2"},
+				SpaceReclaimed:    9999,
+			})(req)
+		}))
 		assert.NilError(t, err)
-		assert.Check(t, is.Len(report.ContainersDeleted, 2))
-		assert.Check(t, is.Equal(uint64(9999), report.SpaceReclaimed))
+
+		req, err := client.ContainersPrune(context.Background(), ContainerPruneOptions{Filters: listCase.filters})
+		assert.NilError(t, err)
+		assert.Check(t, is.Len(req.Report.ContainersDeleted, 2))
+		assert.Check(t, is.Equal(uint64(9999), req.Report.SpaceReclaimed))
 	}
 }

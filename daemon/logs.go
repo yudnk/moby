@@ -24,7 +24,7 @@ import (
 //
 // if it returns nil, the config channel will be active and return log
 // messages until it runs out or the context is canceled.
-func (daemon *Daemon) ContainerLogs(ctx context.Context, containerName string, config *containertypes.LogsOptions) (messages <-chan *backend.LogMessage, isTTY bool, retErr error) {
+func (daemon *Daemon) ContainerLogs(ctx context.Context, containerName string, config *backend.ContainerLogsOptions) (messages <-chan *backend.LogMessage, isTTY bool, retErr error) {
 	ctx, span := tracing.StartSpan(ctx, "daemon.ContainerLogs")
 	defer func() {
 		span.SetStatus(retErr)
@@ -45,7 +45,7 @@ func (daemon *Daemon) ContainerLogs(ctx context.Context, containerName string, c
 		return nil, false, err
 	}
 
-	if ctr.RemovalInProgress || ctr.Dead {
+	if ctr.State.RemovalInProgress || ctr.State.Dead {
 		return nil, false, errdefs.Conflict(errors.New("can not get logs from container which is dead or marked for removal"))
 	}
 

@@ -124,12 +124,18 @@ func (d *driver) CreateEndpoint(ctx context.Context, nid, eid string, ifInfo dri
 
 	// Todo: Add port bindings and qos policies here
 
+	dnsServerList, err := windows.ParseDNSServers(epOptions)
+	if err != nil {
+		return err
+	}
+
 	hnsEndpoint := &hcsshim.HNSEndpoint{
 		Name:              eid,
 		VirtualNetwork:    n.hnsID,
 		IPAddress:         ep.addr.IP,
 		EnableInternalDNS: true,
 		GatewayAddress:    s.gwIP.String(),
+		DNSServerList:     dnsServerList,
 	}
 
 	if ep.mac != nil {
@@ -159,14 +165,14 @@ func (d *driver) CreateEndpoint(ctx context.Context, nid, eid string, ifInfo dri
 	}
 
 	ep.portMapping = epConnectivity.PortBindings
-	ep.portMapping, err = windows.AllocatePorts(n.portMapper, ep.portMapping, ep.addr.IP)
+	ep.portMapping, err = windows.AllocatePorts(n.pa, ep.portMapping)
 	if err != nil {
 		return err
 	}
 
 	defer func() {
 		if err != nil {
-			windows.ReleasePorts(n.portMapper, ep.portMapping)
+			windows.ReleasePorts(n.pa, ep.portMapping)
 		}
 	}()
 
@@ -227,7 +233,7 @@ func (d *driver) DeleteEndpoint(nid, eid string) error {
 		return fmt.Errorf("endpoint id %q not found", eid)
 	}
 
-	windows.ReleasePorts(n.portMapper, ep.portMapping)
+	windows.ReleasePorts(n.pa, ep.portMapping)
 
 	n.deleteEndpoint(eid)
 

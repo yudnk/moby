@@ -20,7 +20,8 @@ import (
 
 	"github.com/cloudflare/cfssl/helpers"
 	"github.com/moby/moby/api/types/swarm"
-	"github.com/moby/moby/api/types/versions"
+	"github.com/moby/moby/client"
+	"github.com/moby/moby/client/pkg/versions"
 	"github.com/moby/moby/v2/daemon/libnetwork/driverapi"
 	"github.com/moby/moby/v2/daemon/libnetwork/ipamapi"
 	remoteipam "github.com/moby/moby/v2/daemon/libnetwork/ipams/remote/api"
@@ -28,9 +29,9 @@ import (
 	"github.com/moby/moby/v2/integration-cli/checker"
 	"github.com/moby/moby/v2/integration-cli/cli"
 	"github.com/moby/moby/v2/integration-cli/daemon"
+	"github.com/moby/moby/v2/internal/testutil"
+	testdaemon "github.com/moby/moby/v2/internal/testutil/daemon"
 	"github.com/moby/moby/v2/pkg/plugins"
-	"github.com/moby/moby/v2/testutil"
-	testdaemon "github.com/moby/moby/v2/testutil/daemon"
 	"github.com/moby/swarmkit/v2/ca/keyutils"
 	"github.com/vishvananda/netlink"
 	"gotest.tools/v3/assert"
@@ -73,9 +74,9 @@ func (s *DockerSwarmSuite) TestSwarmUpdate(c *testing.T) {
 
 	version := cli.Docker(cli.Args("version", "--format", "{{ .Client.Version }}"), cli.Daemon(d)).Stdout()
 	version = strings.TrimSpace(version)
-	// This was broken in v18.06
+	// This was broken between v18.06 and 28.2.0
 	// See: https://github.com/docker/cli/pull/5995
-	if version != "" && versions.LessThan(version, "18.06") {
+	if version != "" && versions.GreaterThanOrEqualTo(version, "28.2") {
 		spec = getSpec()
 		sw := d.GetSwarm(c)
 		if assert.Check(c, is.Len(spec.CAConfig.ExternalCAs, 2)) {
@@ -130,14 +131,13 @@ func (s *DockerSwarmSuite) TestSwarmInit(c *testing.T) {
 
 	version := cli.Docker(cli.Args("version", "--format", "{{ .Client.Version }}"), cli.Daemon(d)).Stdout()
 	version = strings.TrimSpace(version)
-	// This was broken in v18.06
+	// This was broken between v18.06 and 28.2.0
 	// See: https://github.com/docker/cli/pull/5995
-	if version != "" && versions.LessThan(version, "18.06") {
+	if version != "" && versions.GreaterThanOrEqualTo(version, "28.2") {
 		if assert.Check(c, is.Len(spec.CAConfig.ExternalCAs, 2)) {
 			// TODO: Should this actually be:
 			// assert.Check(c, is.Equal(spec.CAConfig.ExternalCAs[0].CACert, sw.TLSInfo.TrustRoot))
 			assert.Check(c, is.Equal(spec.CAConfig.ExternalCAs[0].CACert, ""))
-
 			assert.Check(c, is.Equal(spec.CAConfig.ExternalCAs[1].CACert, string(expected)))
 		}
 	}
@@ -1985,20 +1985,27 @@ func (s *DockerSwarmSuite) TestSwarmClusterEventsNetwork(c *testing.T) {
 func (s *DockerSwarmSuite) TestSwarmClusterEventsSecret(c *testing.T) {
 	ctx := testutil.GetContext(c)
 	d := s.AddDaemon(ctx, c, true, true)
+	apiClient := d.NewClientT(c)
 
 	testName := "test_secret"
-	id := d.CreateSecret(c, swarm.SecretSpec{
-		Annotations: swarm.Annotations{
-			Name: testName,
+	scr, err := apiClient.SecretCreate(ctx, client.SecretCreateOptions{
+		Spec: swarm.SecretSpec{
+			Annotations: swarm.Annotations{
+				Name: testName,
+			},
+			Data: []byte("TESTINGDATA"),
 		},
-		Data: []byte("TESTINGDATA"),
 	})
-	assert.Assert(c, id != "", "secrets: %s", id)
+	assert.NilError(c, err)
+	assert.Assert(c, scr.ID != "", "secrets: %s", scr.ID)
+	id := scr.ID
 
 	waitForEvent(c, d, "0", "-f scope=swarm", "secret create "+id, defaultRetryCount)
 
 	t1 := daemonUnixTime(c)
-	d.DeleteSecret(c, id)
+	_, err = apiClient.SecretRemove(c.Context(), id, client.SecretRemoveOptions{})
+	assert.NilError(c, err)
+
 	// filtered by secret
 	waitForEvent(c, d, t1, "-f type=secret", "secret remove "+id, defaultRetryCount)
 }
@@ -2008,18 +2015,24 @@ func (s *DockerSwarmSuite) TestSwarmClusterEventsConfig(c *testing.T) {
 	d := s.AddDaemon(ctx, c, true, true)
 
 	testName := "test_config"
-	id := d.CreateConfig(c, swarm.ConfigSpec{
-		Annotations: swarm.Annotations{
-			Name: testName,
+	apiClient := d.NewClientT(c)
+	result, err := apiClient.ConfigCreate(ctx, client.ConfigCreateOptions{
+		Spec: swarm.ConfigSpec{
+			Annotations: swarm.Annotations{
+				Name: testName,
+			},
+			Data: []byte("TESTINGDATA"),
 		},
-		Data: []byte("TESTINGDATA"),
 	})
-	assert.Assert(c, id != "", "configs: %s", id)
+	assert.NilError(c, err)
+	assert.Assert(c, result.ID != "", "configs: %s", result.ID)
+	id := result.ID
 
 	waitForEvent(c, d, "0", "-f scope=swarm", "config create "+id, defaultRetryCount)
 
 	t1 := daemonUnixTime(c)
-	d.DeleteConfig(c, id)
+	_, err = apiClient.ConfigRemove(ctx, id, client.ConfigRemoveOptions{})
+	assert.NilError(c, err)
 	// filtered by config
 	waitForEvent(c, d, t1, "-f type=config", "config remove "+id, defaultRetryCount)
 }

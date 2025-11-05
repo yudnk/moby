@@ -28,15 +28,15 @@ import (
 	"testing"
 	"text/template"
 
-	containertypes "github.com/moby/moby/api/types/container"
 	networktypes "github.com/moby/moby/api/types/network"
 	swarmtypes "github.com/moby/moby/api/types/swarm"
+	"github.com/moby/moby/client"
 	"github.com/moby/moby/v2/daemon/libnetwork/drivers/bridge"
 	"github.com/moby/moby/v2/integration/internal/container"
 	"github.com/moby/moby/v2/integration/internal/network"
 	"github.com/moby/moby/v2/integration/internal/testutils/networking"
-	"github.com/moby/moby/v2/testutil"
-	"github.com/moby/moby/v2/testutil/daemon"
+	"github.com/moby/moby/v2/internal/testutil"
+	"github.com/moby/moby/v2/internal/testutil/daemon"
 	"github.com/vishvananda/netlink"
 	"gotest.tools/v3/assert"
 	"gotest.tools/v3/golden"
@@ -50,7 +50,7 @@ var (
 
 type ctrDesc struct {
 	name         string
-	portMappings containertypes.PortMap
+	portMappings networktypes.PortMap
 }
 
 type networkDesc struct {
@@ -79,7 +79,7 @@ var index = []section{
 			containers: []ctrDesc{
 				{
 					name:         "c1",
-					portMappings: containertypes.PortMap{"80/tcp": {{HostPort: "8080"}}},
+					portMappings: networktypes.PortMap{networktypes.MustParsePort("80/tcp"): {{HostPort: "8080"}}},
 				},
 			},
 		}},
@@ -92,7 +92,7 @@ var index = []section{
 			containers: []ctrDesc{
 				{
 					name:         "c1",
-					portMappings: containertypes.PortMap{"80/tcp": {{HostPort: "8080"}}},
+					portMappings: networktypes.PortMap{networktypes.MustParsePort("80/tcp"): {{HostPort: "8080"}}},
 				},
 			},
 		}},
@@ -105,7 +105,7 @@ var index = []section{
 			containers: []ctrDesc{
 				{
 					name:         "c1",
-					portMappings: containertypes.PortMap{"80/tcp": {{HostPort: "8080"}}},
+					portMappings: networktypes.PortMap{networktypes.MustParsePort("80/tcp"): {{HostPort: "8080"}}},
 				},
 			},
 		}},
@@ -139,7 +139,7 @@ var index = []section{
 			containers: []ctrDesc{
 				{
 					name:         "c1",
-					portMappings: containertypes.PortMap{"80/tcp": {{HostPort: "8080"}}},
+					portMappings: networktypes.PortMap{networktypes.MustParsePort("80/tcp"): {{HostPort: "8080"}}},
 				},
 			},
 		}},
@@ -152,7 +152,7 @@ var index = []section{
 			containers: []ctrDesc{
 				{
 					name:         "c1",
-					portMappings: containertypes.PortMap{"80/tcp": {{HostPort: "8080"}}},
+					portMappings: networktypes.PortMap{networktypes.MustParsePort("80/tcp"): {{HostPort: "8080"}}},
 				},
 			},
 		}},
@@ -178,7 +178,7 @@ var index = []section{
 			containers: []ctrDesc{
 				{
 					name:         "c1",
-					portMappings: containertypes.PortMap{"80/tcp": {{HostIP: "127.0.0.1", HostPort: "8080"}}},
+					portMappings: networktypes.PortMap{networktypes.MustParsePort("80/tcp"): {{HostIP: netip.MustParseAddr("127.0.0.1"), HostPort: "8080"}}},
 				},
 			},
 		}},
@@ -283,7 +283,7 @@ func createBridgeNetworks(ctx context.Context, t *testing.T, d *daemon.Daemon, s
 		if gwMode == "" {
 			gwMode = "nat"
 		}
-		netOpts := []func(*networktypes.CreateOptions){
+		netOpts := []func(*client.NetworkCreateOptions){
 			network.WithIPAM(docNetworks[i], docGateways[i]),
 			network.WithOption(bridge.BridgeName, nw.name),
 			network.WithOption(bridge.IPv4GatewayMode, gwMode),
@@ -300,7 +300,7 @@ func createBridgeNetworks(ctx context.Context, t *testing.T, d *daemon.Daemon, s
 		for _, ctr := range nw.containers {
 			var exposedPorts []string
 			for ep := range ctr.portMappings {
-				exposedPorts = append(exposedPorts, ep.Port()+"/"+ep.Proto())
+				exposedPorts = append(exposedPorts, ep.String())
 			}
 			id := container.Run(ctx, t, c,
 				container.WithNetworkMode(nw.name),
@@ -308,7 +308,7 @@ func createBridgeNetworks(ctx context.Context, t *testing.T, d *daemon.Daemon, s
 				container.WithPortMap(ctr.portMappings),
 			)
 			t.Cleanup(func() {
-				c.ContainerRemove(ctx, id, containertypes.RemoveOptions{Force: true})
+				c.ContainerRemove(ctx, id, client.ContainerRemoveOptions{Force: true})
 			})
 		}
 	}
@@ -358,7 +358,7 @@ func createServices(ctx context.Context, t *testing.T, d *daemon.Daemon, section
 
 /*
 func pollService(ctx context.Context, t *testing.T, c *client.Client, host networking.Host) poll.Result {
-	cl, err := c.ContainerList(ctx, containertypes.ListOptions{})
+	cl, err := c.ContainerList(ctx, client.ContainerListOptions{})
 	if err != nil {
 		return poll.Error(fmt.Errorf("failed to list containers: %w", err))
 	}
@@ -380,6 +380,7 @@ func pollService(ctx context.Context, t *testing.T, c *client.Client, host netwo
 func runNftables(t *testing.T, host networking.Host) map[string]string {
 	res := map[string]string{}
 	out := host.MustRun(t, "nft", "-s", "list", "table", "ip", "docker-bridges")
+	out = strings.ReplaceAll(out, "type nat hook output priority -100", "type nat hook output priority dstnat")
 	// Indent the result, so that it's treated as preformatted markdown.
 	res["Ruleset4"] = "    " + strings.ReplaceAll(out, "\n", "\n    ")
 
@@ -447,11 +448,15 @@ func lines(s string) iter.Seq[string] {
 	}
 }
 
+const genHeader = "<!-- This is a generated file; DO NOT EDIT. -->\n\n"
+
 func generate(t *testing.T, name string, data map[string]string) string {
 	t.Helper()
 	templ, err := template.New(name).ParseFiles(filepath.Join("templates", name))
 	assert.NilError(t, err)
-	wr := strings.Builder{}
+
+	var wr strings.Builder
+	wr.WriteString(genHeader)
 	err = templ.ExecuteTemplate(&wr, name, data)
 	assert.NilError(t, err)
 	return wr.String()

@@ -57,13 +57,13 @@ func (daemon *Daemon) getExecConfig(name string) (*container.ExecConfig, error) 
 	if ctr == nil {
 		return nil, containerNotFound(name)
 	}
-	if !ctr.IsRunning() {
+	if !ctr.State.IsRunning() {
 		return nil, errNotRunning(ctr.ID)
 	}
-	if ctr.IsPaused() {
+	if ctr.State.IsPaused() {
 		return nil, errExecPaused(ctr.ID)
 	}
-	if ctr.IsRestarting() {
+	if ctr.State.IsRestarting() {
 		return nil, errContainerIsRestarting(ctr.ID)
 	}
 	return ec, nil
@@ -80,20 +80,20 @@ func (daemon *Daemon) getActiveContainer(name string) (*container.Container, err
 		return nil, err
 	}
 
-	if !ctr.IsRunning() {
+	if !ctr.State.IsRunning() {
 		return nil, errNotRunning(ctr.ID)
 	}
-	if ctr.IsPaused() {
+	if ctr.State.IsPaused() {
 		return nil, errExecPaused(name)
 	}
-	if ctr.IsRestarting() {
+	if ctr.State.IsRestarting() {
 		return nil, errContainerIsRestarting(ctr.ID)
 	}
 	return ctr, nil
 }
 
 // ContainerExecCreate sets up an exec in a running container.
-func (daemon *Daemon) ContainerExecCreate(name string, options *containertypes.ExecOptions) (string, error) {
+func (daemon *Daemon) ContainerExecCreate(name string, options *containertypes.ExecCreateRequest) (string, error) {
 	cntr, err := daemon.getActiveContainer(name)
 	if err != nil {
 		return "", err
@@ -319,7 +319,7 @@ func (daemon *Daemon) ContainerExecStart(ctx context.Context, name string, optio
 	case <-ctx.Done():
 		logger := log.G(ctx).WithFields(log.Fields{
 			"container": ec.Container.ID,
-			"exeec":     ec.ID,
+			"execID":    ec.ID,
 		})
 		logger.Debug("Sending KILL signal to container process")
 		sigCtx, cancelFunc := context.WithTimeout(context.Background(), 30*time.Second)

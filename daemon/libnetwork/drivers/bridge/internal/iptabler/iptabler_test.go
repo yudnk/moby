@@ -14,7 +14,7 @@ import (
 	"github.com/moby/moby/v2/daemon/libnetwork/drivers/bridge/internal/firewaller"
 	"github.com/moby/moby/v2/daemon/libnetwork/iptables"
 	"github.com/moby/moby/v2/daemon/libnetwork/types"
-	"github.com/moby/moby/v2/internal/testutils/netnsutils"
+	"github.com/moby/moby/v2/internal/testutil/netnsutils"
 	"gotest.tools/v3/assert"
 	"gotest.tools/v3/golden"
 	"gotest.tools/v3/icmd"
@@ -142,14 +142,14 @@ func TestIptabler(t *testing.T) {
 					resName = fmt.Sprintf("hairpin=%v,internal=%v,icc=%v,masq=%v,snat=%v,gwm=%v,bindlh=%v",
 						p(hairpin), p(internal), p(icc), p(masq), p(snat), gwmode, p(bindLocalhost))
 				}
-				testIptabler(t, tn, config, netConfig, p(bindLocalhost), tn+"_"+resName)
+				testIptabler(t, tn, config, netConfig, p(bindLocalhost), tn+"/"+resName)
 			})
 		}
 	}
 }
 
 func testIptabler(t *testing.T, tn string, config firewaller.Config, netConfig firewaller.NetworkConfig, bindLocalhost bool, resName string) {
-	defer netnsutils.SetupTestOSContext(t)()
+	defer netnsutils.SetupTestOSContext(t, netnsutils.WithSetNsHandles(false))()
 
 	stripComments := func(text string) string {
 		lines := strings.Split(text, "\n")
@@ -168,7 +168,7 @@ func testIptabler(t *testing.T, tn string, config firewaller.Config, netConfig f
 			res := icmd.RunCommand(cmd+"-save", "-t", table)
 			assert.Assert(t, res.Error)
 			if !en {
-				name = tn + "_no"
+				name = tn + "/no"
 			}
 			dump += res.Combined()
 		}
@@ -199,8 +199,8 @@ func testIptabler(t *testing.T, tn string, config firewaller.Config, netConfig f
 	// end of the test (after deleting per-network and per-port rules).
 	fw, err := NewIptabler(context.Background(), config)
 	assert.NilError(t, err)
-	checkResults("iptables", rnWSL2Mirrored(fmt.Sprintf("%s_cleaned,hairpin=%v", tn, config.Hairpin)), config.IPv4)
-	checkResults("ip6tables", fmt.Sprintf("%s_cleaned,hairpin=%v", tn, config.Hairpin), config.IPv6)
+	checkResults("iptables", rnWSL2Mirrored(fmt.Sprintf("%s/cleaned,hairpin=%v", tn, config.Hairpin)), config.IPv4)
+	checkResults("ip6tables", fmt.Sprintf("%s/cleaned,hairpin=%v", tn, config.Hairpin), config.IPv6)
 
 	// Add the network.
 	nw, err := fw.NewNetwork(context.Background(), netConfig)
@@ -235,6 +235,6 @@ func testIptabler(t *testing.T, tn string, config firewaller.Config, netConfig f
 	assert.NilError(t, err)
 	err = nw.DelNetworkLevelRules(context.Background())
 	assert.NilError(t, err)
-	checkResults("iptables", rnWSL2Mirrored(fmt.Sprintf("%s_cleaned,hairpin=%v", tn, config.Hairpin)), config.IPv4)
-	checkResults("ip6tables", fmt.Sprintf("%s_cleaned,hairpin=%v", tn, config.Hairpin), config.IPv6)
+	checkResults("iptables", rnWSL2Mirrored(fmt.Sprintf("%s/cleaned,hairpin=%v", tn, config.Hairpin)), config.IPv4)
+	checkResults("ip6tables", fmt.Sprintf("%s/cleaned,hairpin=%v", tn, config.Hairpin), config.IPv6)
 }

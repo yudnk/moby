@@ -13,7 +13,7 @@ import (
 	"github.com/moby/moby/v2/daemon/internal/image"
 	"github.com/moby/moby/v2/daemon/internal/layer"
 	"github.com/moby/moby/v2/daemon/internal/timestamp"
-	"github.com/moby/moby/v2/daemon/server/backend"
+	"github.com/moby/moby/v2/daemon/server/imagebackend"
 )
 
 var acceptedImageFilterTags = map[string]bool{
@@ -34,7 +34,7 @@ func (r byCreated) Swap(i, j int)      { r[i], r[j] = r[j], r[i] }
 func (r byCreated) Less(i, j int) bool { return r[i].Created < r[j].Created }
 
 // Images returns a filtered list of images.
-func (i *ImageService) Images(ctx context.Context, opts imagetypes.ListOptions) ([]*imagetypes.Summary, error) {
+func (i *ImageService) Images(ctx context.Context, opts imagebackend.ListOptions) ([]*imagetypes.Summary, error) {
 	if err := opts.Filters.Validate(acceptedImageFilterTags); err != nil {
 		return nil, err
 	}
@@ -46,7 +46,7 @@ func (i *ImageService) Images(ctx context.Context, opts imagetypes.ListOptions) 
 
 	var beforeFilter, sinceFilter time.Time
 	err = opts.Filters.WalkValues("before", func(value string) error {
-		img, err := i.GetImage(ctx, value, backend.GetImageOpts{})
+		img, err := i.GetImage(ctx, value, imagebackend.GetImageOpts{})
 		if err != nil {
 			return err
 		}
@@ -70,9 +70,8 @@ func (i *ImageService) Images(ctx context.Context, opts imagetypes.ListOptions) 
 		if err != nil {
 			return err
 		}
-		timestamp := time.Unix(seconds, nanoseconds)
-		if beforeFilter.IsZero() || beforeFilter.After(timestamp) {
-			beforeFilter = timestamp
+		if tsUnix := time.Unix(seconds, nanoseconds); beforeFilter.IsZero() || beforeFilter.After(tsUnix) {
+			beforeFilter = tsUnix
 		}
 		return nil
 	})
@@ -81,7 +80,7 @@ func (i *ImageService) Images(ctx context.Context, opts imagetypes.ListOptions) 
 	}
 
 	err = opts.Filters.WalkValues("since", func(value string) error {
-		img, err := i.GetImage(ctx, value, backend.GetImageOpts{})
+		img, err := i.GetImage(ctx, value, imagebackend.GetImageOpts{})
 		if err != nil {
 			return err
 		}
@@ -134,7 +133,7 @@ func (i *ImageService) Images(ctx context.Context, opts imagetypes.ListOptions) 
 		}
 
 		// Skip any images with an unsupported operating system to avoid a potential
-		// panic when indexing through the layerstore. Don't error as we want to list
+		// panic when indexing through the layerStore. Don't error as we want to list
 		// the other images. This should never happen, but here as a safety precaution.
 		if err := image.CheckOS(img.OperatingSystem()); err != nil {
 			continue
@@ -246,13 +245,13 @@ func (i *ImageService) Images(ctx context.Context, opts imagetypes.ListOptions) 
 			summary.SharedSize = 0
 			for _, id := range img.RootFS.DiffIDs {
 				rootFS.Append(id)
-				chid := rootFS.ChainID()
+				chID := rootFS.ChainID()
 
-				if layerRefs[chid] > 1 {
-					if _, ok := allLayers[chid]; !ok {
-						return nil, fmt.Errorf("layer %v was not found (corruption?)", chid)
+				if layerRefs[chID] > 1 {
+					if _, ok := allLayers[chID]; !ok {
+						return nil, fmt.Errorf("layer %v was not found (corruption?)", chID)
 					}
-					summary.SharedSize += allLayers[chid].DiffSize()
+					summary.SharedSize += allLayers[chID].DiffSize()
 				}
 			}
 		}
@@ -274,7 +273,7 @@ func newImageSummary(image *image.Image, size int64) *imagetypes.Summary {
 		Created:  created,
 		Size:     size,
 		// -1 indicates that the value has not been set (avoids ambiguity
-		// between 0 (default) and "not set". We cannot use a pointer (nil)
+		// between 0 (default) and "not set"). We cannot use a pointer (nil)
 		// for this, as the JSON representation uses "omitempty", which would
 		// consider both "0" and "nil" to be "empty".
 		SharedSize: -1,

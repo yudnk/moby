@@ -1,7 +1,6 @@
 package containerd
 
 import (
-	"context"
 	"fmt"
 	"path/filepath"
 	"testing"
@@ -9,15 +8,15 @@ import (
 	c8dimages "github.com/containerd/containerd/v2/core/images"
 	"github.com/containerd/containerd/v2/pkg/namespaces"
 	"github.com/containerd/log/logtest"
-	"github.com/moby/moby/v2/daemon/server/backend"
-	"github.com/moby/moby/v2/internal/testutils/specialimage"
+	"github.com/moby/moby/v2/daemon/server/imagebackend"
+	"github.com/moby/moby/v2/internal/testutil/specialimage"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 )
 
 func TestImageInspect(t *testing.T) {
-	ctx := namespaces.WithNamespace(context.TODO(), "testing")
+	ctx := namespaces.WithNamespace(t.Context(), "testing")
 
 	blobsDir := t.TempDir()
 
@@ -50,7 +49,7 @@ func TestImageInspect(t *testing.T) {
 
 		for _, manifests := range []bool{true, false} {
 			t.Run(fmt.Sprintf("manifests=%t", manifests), func(t *testing.T) {
-				inspect, err := service.ImageInspect(ctx, missingMultiPlatform.Name, backend.ImageInspectOpts{Manifests: manifests})
+				inspect, err := service.ImageInspect(ctx, missingMultiPlatform.Name, imagebackend.ImageInspectOpts{Manifests: manifests})
 				assert.NilError(t, err)
 
 				if manifests {
@@ -79,7 +78,7 @@ func TestImageInspect(t *testing.T) {
 
 		// Test with amd64 platform
 		amd64Platform := &ocispec.Platform{OS: "linux", Architecture: "amd64"}
-		inspectAmd64, err := service.ImageInspect(ctx, multiPlatformImage.Name, backend.ImageInspectOpts{
+		inspectAmd64, err := service.ImageInspect(ctx, multiPlatformImage.Name, imagebackend.ImageInspectOpts{
 			Platform: amd64Platform,
 		})
 		assert.NilError(t, err)
@@ -88,7 +87,7 @@ func TestImageInspect(t *testing.T) {
 
 		// Test with arm64 platform
 		arm64Platform := &ocispec.Platform{OS: "linux", Architecture: "arm64"}
-		inspectArm64, err := service.ImageInspect(ctx, multiPlatformImage.Name, backend.ImageInspectOpts{
+		inspectArm64, err := service.ImageInspect(ctx, multiPlatformImage.Name, imagebackend.ImageInspectOpts{
 			Platform: arm64Platform,
 		})
 		assert.NilError(t, err)

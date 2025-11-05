@@ -14,7 +14,6 @@ import (
 	"testing"
 
 	"github.com/containerd/log"
-	"github.com/moby/moby/v2/daemon/internal/sliceutil"
 	"github.com/moby/moby/v2/daemon/libnetwork/drivers/bridge/internal/firewaller"
 	"github.com/moby/moby/v2/daemon/libnetwork/drvregistry"
 	"github.com/moby/moby/v2/daemon/libnetwork/netlabel"
@@ -24,8 +23,9 @@ import (
 	"github.com/moby/moby/v2/daemon/libnetwork/portmappers/nat"
 	"github.com/moby/moby/v2/daemon/libnetwork/portmappers/routed"
 	"github.com/moby/moby/v2/daemon/libnetwork/types"
-	"github.com/moby/moby/v2/internal/testutils/netnsutils"
-	"github.com/moby/moby/v2/internal/testutils/storeutils"
+	"github.com/moby/moby/v2/internal/sliceutil"
+	"github.com/moby/moby/v2/internal/testutil/netnsutils"
+	"github.com/moby/moby/v2/internal/testutil/storeutils"
 	"github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 	"gotest.tools/v3/assert"
@@ -41,18 +41,10 @@ func TestPortMappingConfig(t *testing.T) {
 	err := pms.Register("nat", pm)
 	assert.NilError(t, err)
 
-	d := newDriver(storeutils.NewTempStore(t), &pms)
-
-	config := &configuration{
+	d, err := newDriver(storeutils.NewTempStore(t), Configuration{
 		EnableIPTables: true,
-		Hairpin:        true,
-	}
-	genericOption := make(map[string]any)
-	genericOption[netlabel.GenericData] = config
-
-	if err := d.configure(genericOption); err != nil {
-		t.Fatalf("Failed to setup driver config: %v", err)
-	}
+	}, &pms)
+	assert.NilError(t, err)
 
 	binding1 := types.PortBinding{Proto: types.SCTP, Port: 300, HostPort: 65000}
 	binding2 := types.PortBinding{Proto: types.UDP, Port: 400, HostPort: 54000}
@@ -131,18 +123,11 @@ func TestPortMappingV6Config(t *testing.T) {
 	err := pms.Register("nat", pm)
 	assert.NilError(t, err)
 
-	d := newDriver(storeutils.NewTempStore(t), &pms)
-
-	config := &configuration{
+	d, err := newDriver(storeutils.NewTempStore(t), Configuration{
 		EnableIPTables:  true,
 		EnableIP6Tables: true,
-	}
-	genericOption := make(map[string]any)
-	genericOption[netlabel.GenericData] = config
-
-	if err := d.configure(genericOption); err != nil {
-		t.Fatalf("Failed to setup driver config: %v", err)
-	}
+	}, &pms)
+	assert.NilError(t, err)
 
 	portBindings := []types.PortBinding{
 		{Proto: types.UDP, Port: 400, HostPort: 54000},
@@ -386,7 +371,7 @@ func TestAddPortMappings(t *testing.T) {
 			},
 			enableProxy:  true,
 			busyPortIPv4: 8081,
-			expErr:       "failed to bind host port 0.0.0.0:8081",
+			expErr:       "failed to bind host port 0.0.0.0:8081/tcp: address already in use",
 		},
 		{
 			name:     "map host ipv6 to ipv4 container with proxy",
@@ -563,7 +548,6 @@ func TestAddPortMappings(t *testing.T) {
 			cfg: []portmapperapi.PortBindingReq{
 				{PortBinding: types.PortBinding{Proto: types.TCP, Port: 22, HostIP: net.IPv6loopback}},
 			},
-			hairpin: true,
 			expLogs: []string{"Cannot map from IPv6 to an IPv4-only container because the userland proxy is disabled"},
 		},
 		{
@@ -573,7 +557,6 @@ func TestAddPortMappings(t *testing.T) {
 			cfg: []portmapperapi.PortBindingReq{
 				{PortBinding: types.PortBinding{Proto: types.TCP, Port: 22}},
 			},
-			hairpin: true,
 			expLogs: []string{"Cannot map from default host binding address to an IPv4-only container because the userland proxy is disabled"},
 		},
 		{
@@ -718,7 +701,7 @@ func TestAddPortMappings(t *testing.T) {
 
 			// Mock the startProxy function used by the code under test.
 			proxies := map[proxyCall]bool{} // proxy -> is not stopped
-			startProxy := func(pb types.PortBinding, listenSock *os.File) (stop func() error, retErr error) {
+			startProxy = func(pb types.PortBinding, _ string, listenSock *os.File) (stop func() error, retErr error) {
 				if tc.busyPortIPv4 > 0 && tc.busyPortIPv4 == int(pb.HostPort) && pb.HostIP.To4() != nil {
 					return nil, errors.New("busy port")
 				}
@@ -768,14 +751,18 @@ func TestAddPortMappings(t *testing.T) {
 
 			pms := &drvregistry.PortMappers{}
 			err := nat.Register(pms, nat.Config{
-				RlkClient:   pdc,
-				EnableProxy: tc.enableProxy,
-				StartProxy:  startProxy,
+				RlkClient: pdc,
 			})
 			assert.NilError(t, err)
 			err = routed.Register(pms)
 			assert.NilError(t, err)
 
+			driver, err := newDriver(storeutils.NewTempStore(t), Configuration{
+				EnableIPTables:  true,
+				EnableIP6Tables: true,
+				EnableProxy:     tc.enableProxy,
+			}, pms)
+			assert.NilError(t, err)
 			n := &bridgeNetwork{
 				config: &networkConfiguration{
 					BridgeName: "dummybridge",
@@ -785,17 +772,8 @@ func TestAddPortMappings(t *testing.T) {
 					GwModeIPv6: tc.gwMode6,
 				},
 				bridge: &bridgeInterface{},
-				driver: newDriver(storeutils.NewTempStore(t), pms),
+				driver: driver,
 			}
-			genericOption := map[string]any{
-				netlabel.GenericData: &configuration{
-					EnableIPTables:  true,
-					EnableIP6Tables: true,
-					Hairpin:         tc.hairpin,
-				},
-			}
-			err = n.driver.configure(genericOption)
-			assert.NilError(t, err)
 			fwn, err := n.newFirewallerNetwork(context.Background())
 			assert.NilError(t, err)
 			assert.Check(t, fwn != nil, "no firewaller network")
@@ -892,8 +870,8 @@ func TestAddPortMappings(t *testing.T) {
 			}
 
 			// Check a docker-proxy was started and stopped for each expected port binding.
+			expProxies := map[proxyCall]bool{}
 			if tc.enableProxy {
-				expProxies := map[proxyCall]bool{}
 				for _, expPB := range tc.expPBs {
 					hip := expChildIP(expPB.HostIP)
 					is4 := hip.To4() != nil
@@ -905,8 +883,8 @@ func TestAddPortMappings(t *testing.T) {
 						expPB.IP, int(expPB.Port))
 					expProxies[p] = tc.expReleaseErr != ""
 				}
-				assert.Check(t, is.DeepEqual(expProxies, proxies))
 			}
+			assert.Check(t, is.DeepEqual(expProxies, proxies))
 
 			// Check the port driver has seen the expected port mappings and no others,
 			// and that they have all been closed.
@@ -995,7 +973,7 @@ type stubPortMapper struct {
 	mapped []portmapperapi.PortBinding
 }
 
-func (pm *stubPortMapper) MapPorts(_ context.Context, reqs []portmapperapi.PortBindingReq, _ portmapperapi.Firewaller) ([]portmapperapi.PortBinding, error) {
+func (pm *stubPortMapper) MapPorts(_ context.Context, reqs []portmapperapi.PortBindingReq) ([]portmapperapi.PortBinding, error) {
 	if len(reqs) == 0 {
 		return []portmapperapi.PortBinding{}, nil
 	}
@@ -1007,7 +985,7 @@ func (pm *stubPortMapper) MapPorts(_ context.Context, reqs []portmapperapi.PortB
 	return pbs, nil
 }
 
-func (pm *stubPortMapper) UnmapPorts(_ context.Context, reqs []portmapperapi.PortBinding, _ portmapperapi.Firewaller) error {
+func (pm *stubPortMapper) UnmapPorts(_ context.Context, reqs []portmapperapi.PortBinding) error {
 	for _, req := range reqs {
 		// We're only checking for the PortBinding here, not any other
 		// property of [portmapperapi.PortBinding].

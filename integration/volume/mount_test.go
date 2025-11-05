@@ -9,17 +9,14 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/moby/moby/api/types/build"
 	containertypes "github.com/moby/moby/api/types/container"
-	"github.com/moby/moby/api/types/image"
 	"github.com/moby/moby/api/types/mount"
 	"github.com/moby/moby/api/types/network"
-	"github.com/moby/moby/api/types/versions"
-	"github.com/moby/moby/api/types/volume"
 	"github.com/moby/moby/client"
+	"github.com/moby/moby/client/pkg/versions"
 	"github.com/moby/moby/v2/daemon/volume/safepath"
 	"github.com/moby/moby/v2/integration/internal/container"
-	"github.com/moby/moby/v2/testutil/fakecontext"
+	"github.com/moby/moby/v2/internal/testutil/fakecontext"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 	"gotest.tools/v3/skip"
@@ -83,10 +80,15 @@ func TestRunMountVolumeSubdir(t *testing.T) {
 			}
 
 			ctrName := strings.ReplaceAll(t.Name(), "/", "_")
-			create, creatErr := apiClient.ContainerCreate(ctx, &cfg, &hostCfg, &network.NetworkingConfig{}, nil, ctrName)
+			create, creatErr := apiClient.ContainerCreate(ctx, client.ContainerCreateOptions{
+				Config:           &cfg,
+				HostConfig:       &hostCfg,
+				NetworkingConfig: &network.NetworkingConfig{},
+				Name:             ctrName,
+			})
 			id := create.ID
 			if id != "" {
-				defer apiClient.ContainerRemove(ctx, id, containertypes.RemoveOptions{Force: true})
+				defer apiClient.ContainerRemove(ctx, id, client.ContainerRemoveOptions{Force: true})
 			}
 
 			if tc.createErr != "" {
@@ -95,7 +97,7 @@ func TestRunMountVolumeSubdir(t *testing.T) {
 			}
 			assert.NilError(t, creatErr, "container creation failed")
 
-			startErr := apiClient.ContainerStart(ctx, id, containertypes.StartOptions{})
+			_, startErr := apiClient.ContainerStart(ctx, id, client.ContainerStartOptions{})
 			if tc.startErr != "" {
 				assert.ErrorContains(t, startErr, tc.startErr)
 				return
@@ -105,9 +107,9 @@ func TestRunMountVolumeSubdir(t *testing.T) {
 			output, err := container.Output(ctx, apiClient, id)
 			assert.Check(t, err)
 
-			inspect, err := apiClient.ContainerInspect(ctx, id)
+			inspect, err := apiClient.ContainerInspect(ctx, id, client.ContainerInspectOptions{})
 			if assert.Check(t, err) {
-				assert.Check(t, is.Equal(inspect.State.ExitCode, 0))
+				assert.Check(t, is.Equal(inspect.Container.State.ExitCode, 0))
 			}
 
 			assert.Check(t, is.Equal(strings.TrimSpace(output.Stderr), ""))
@@ -149,7 +151,9 @@ func TestRunMountImage(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			testImage := setupTestImage(t, ctx, apiClient, tc.name)
 			if testImage != "" {
-				defer apiClient.ImageRemove(ctx, testImage, image.RemoveOptions{Force: true})
+				defer func() {
+					_, _ = apiClient.ImageRemove(ctx, testImage, client.ImageRemoveOptions{Force: true})
+				}()
 			}
 
 			cfg := containertypes.Config{
@@ -169,7 +173,7 @@ func TestRunMountImage(t *testing.T) {
 			}
 
 			startContainer := func(id string) {
-				startErr := apiClient.ContainerStart(ctx, id, containertypes.StartOptions{})
+				_, startErr := apiClient.ContainerStart(ctx, id, client.ContainerStartOptions{})
 				if tc.startErr != "" {
 					assert.ErrorContains(t, startErr, tc.startErr)
 					return
@@ -178,10 +182,15 @@ func TestRunMountImage(t *testing.T) {
 			}
 
 			ctrName := strings.ReplaceAll(t.Name(), "/", "_")
-			create, creatErr := apiClient.ContainerCreate(ctx, &cfg, &hostCfg, &network.NetworkingConfig{}, nil, ctrName)
+			create, creatErr := apiClient.ContainerCreate(ctx, client.ContainerCreateOptions{
+				Config:           &cfg,
+				HostConfig:       &hostCfg,
+				NetworkingConfig: &network.NetworkingConfig{},
+				Name:             ctrName,
+			})
 			id := create.ID
 			if id != "" {
-				defer container.Remove(ctx, t, apiClient, id, containertypes.RemoveOptions{Force: true})
+				defer container.Remove(ctx, t, apiClient, id, client.ContainerRemoveOptions{Force: true})
 			}
 
 			if tc.createErr != "" {
@@ -195,16 +204,16 @@ func TestRunMountImage(t *testing.T) {
 			if tc.name == "image_remove" {
 				img, _ := apiClient.ImageInspect(ctx, testImage)
 				imgId := strings.Split(img.ID, ":")[1]
-				_, removeErr := apiClient.ImageRemove(ctx, testImage, image.RemoveOptions{})
+				_, removeErr := apiClient.ImageRemove(ctx, testImage, client.ImageRemoveOptions{})
 				assert.ErrorContains(t, removeErr, fmt.Sprintf(`container %s is using its referenced image %s`, id[:12], imgId[:12]))
 			}
 
 			// Test that the container servives a restart when mounted image is removed
 			if tc.name == "image_remove_force" {
-				stopErr := apiClient.ContainerStop(ctx, id, containertypes.StopOptions{})
+				_, stopErr := apiClient.ContainerStop(ctx, id, client.ContainerStopOptions{})
 				assert.NilError(t, stopErr)
 
-				_, removeErr := apiClient.ImageRemove(ctx, testImage, image.RemoveOptions{Force: true})
+				_, removeErr := apiClient.ImageRemove(ctx, testImage, client.ImageRemoveOptions{Force: true})
 				assert.NilError(t, removeErr)
 
 				startContainer(id)
@@ -213,9 +222,9 @@ func TestRunMountImage(t *testing.T) {
 			output, err := container.Output(ctx, apiClient, id)
 			assert.Check(t, err)
 
-			inspect, err := apiClient.ContainerInspect(ctx, id)
+			inspect, err := apiClient.ContainerInspect(ctx, id, client.ContainerInspectOptions{})
 			if tc.startErr == "" && assert.Check(t, err) {
-				assert.Check(t, is.Equal(inspect.State.ExitCode, 0))
+				assert.Check(t, is.Equal(inspect.Container.State.ExitCode, 0))
 			}
 
 			assert.Check(t, is.Equal(strings.TrimSpace(output.Stderr), ""))
@@ -240,10 +249,10 @@ func setupTestVolume(t *testing.T, apiClient client.APIClient) string {
 
 	volumeName := t.Name() + "-volume"
 
-	err := apiClient.VolumeRemove(ctx, volumeName, true)
+	_, err := apiClient.VolumeRemove(ctx, volumeName, client.VolumeRemoveOptions{Force: true})
 	assert.NilError(t, err, "failed to clean volume")
 
-	_, err = apiClient.VolumeCreate(ctx, volume.CreateOptions{
+	_, err = apiClient.VolumeCreate(ctx, client.VolumeCreateOptions{
 		Name: volumeName,
 	})
 	assert.NilError(t, err, "failed to setup volume")
@@ -279,15 +288,15 @@ func setupTestVolume(t *testing.T, apiClient client.APIClient) string {
 	}
 
 	cid := container.Run(ctx, t, apiClient, opts...)
-	defer container.Remove(ctx, t, apiClient, cid, containertypes.RemoveOptions{Force: true})
+	defer container.Remove(ctx, t, apiClient, cid, client.ContainerRemoveOptions{Force: true})
 	output, err := container.Output(ctx, apiClient, cid)
 
 	assert.NilError(t, err)
 	assert.Assert(t, is.Equal(output.Stderr, ""))
 
-	inspect, err := apiClient.ContainerInspect(ctx, cid)
+	inspect, err := apiClient.ContainerInspect(ctx, cid, client.ContainerInspectOptions{})
 	assert.NilError(t, err)
-	assert.Assert(t, is.Equal(inspect.State.ExitCode, 0))
+	assert.Assert(t, is.Equal(inspect.Container.State.ExitCode, 0))
 
 	return volumeName
 }
@@ -321,13 +330,11 @@ func setupTestImage(t *testing.T, ctx context.Context, apiClient client.APIClien
 	)
 	defer source.Close()
 
-	resp, err := apiClient.ImageBuild(ctx,
-		source.AsTarReader(t),
-		build.ImageBuildOptions{
-			Remove:      false,
-			ForceRemove: false,
-			Tags:        []string{imgName},
-		})
+	resp, err := apiClient.ImageBuild(ctx, source.AsTarReader(t), client.ImageBuildOptions{
+		Remove:      false,
+		ForceRemove: false,
+		Tags:        []string{imgName},
+	})
 	assert.NilError(t, err)
 
 	out := bytes.NewBuffer(nil)
@@ -375,14 +382,14 @@ func TestRunMountImageMultipleTimes(t *testing.T) {
 		}),
 	)
 
-	defer apiClient.ContainerRemove(ctx, id, containertypes.RemoveOptions{Force: true})
+	defer apiClient.ContainerRemove(ctx, id, client.ContainerRemoveOptions{Force: true})
 
-	inspect, err := apiClient.ContainerInspect(ctx, id)
+	inspect, err := apiClient.ContainerInspect(ctx, id, client.ContainerInspectOptions{})
 	assert.NilError(t, err)
 
-	assert.Equal(t, len(inspect.Mounts), 2)
+	assert.Equal(t, len(inspect.Container.Mounts), 2)
 	var hasFoo, hasBar bool
-	for _, mnt := range inspect.Mounts {
+	for _, mnt := range inspect.Container.Mounts {
 		if mnt.Destination == "/etc/foo" {
 			hasFoo = true
 		}

@@ -1,6 +1,7 @@
 package swarm
 
 import (
+	"net/netip"
 	"time"
 )
 
@@ -12,7 +13,7 @@ type ClusterInfo struct {
 	Spec                   Spec
 	TLSInfo                TLSInfo
 	RootRotationInProgress bool
-	DefaultAddrPool        []string
+	DefaultAddrPool        []netip.Prefix
 	SubnetSize             uint32
 	DataPathPort           uint32
 }
@@ -159,7 +160,7 @@ type InitRequest struct {
 	Spec             Spec
 	AutoLockManagers bool
 	Availability     NodeAvailability
-	DefaultAddrPool  []string
+	DefaultAddrPool  []netip.Prefix
 	SubnetSize       uint32
 }
 
@@ -213,27 +214,10 @@ type Info struct {
 	Warnings []string `json:",omitempty"`
 }
 
-// Status provides information about the current swarm status and role,
-// obtained from the "Swarm" header in the API response.
-type Status struct {
-	// NodeState represents the state of the node.
-	NodeState LocalNodeState
-
-	// ControlAvailable indicates if the node is a swarm manager.
-	ControlAvailable bool
-}
-
 // Peer represents a peer.
 type Peer struct {
 	NodeID string
 	Addr   string
-}
-
-// UpdateFlags contains flags for SwarmUpdate.
-type UpdateFlags struct {
-	RotateWorkerToken      bool
-	RotateManagerToken     bool
-	RotateManagerUnlockKey bool
 }
 
 // UnlockKeyResponse contains the response for Engine API:

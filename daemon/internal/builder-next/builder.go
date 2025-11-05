@@ -19,7 +19,6 @@ import (
 	"github.com/moby/buildkit/session"
 	"github.com/moby/buildkit/util/entitlements"
 	"github.com/moby/buildkit/util/tracing"
-	"github.com/moby/moby/api/pkg/streamformatter"
 	"github.com/moby/moby/api/types/build"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/network"
@@ -29,10 +28,11 @@ import (
 	"github.com/moby/moby/v2/daemon/internal/builder-next/exporter"
 	"github.com/moby/moby/v2/daemon/internal/builder-next/exporter/mobyexporter"
 	"github.com/moby/moby/v2/daemon/internal/builder-next/exporter/overrides"
+	"github.com/moby/moby/v2/daemon/internal/streamformatter"
 	"github.com/moby/moby/v2/daemon/internal/timestamp"
 	"github.com/moby/moby/v2/daemon/libnetwork"
 	"github.com/moby/moby/v2/daemon/pkg/opts"
-	"github.com/moby/moby/v2/daemon/server/backend"
+	"github.com/moby/moby/v2/daemon/server/buildbackend"
 	"github.com/moby/moby/v2/errdefs"
 	"github.com/moby/sys/user"
 	"github.com/pkg/errors"
@@ -160,7 +160,6 @@ func (b *Builder) DiskUsage(ctx context.Context) ([]*build.CacheRecord, error) {
 	for _, r := range duResp.Record {
 		items = append(items, &build.CacheRecord{
 			ID:          r.ID,
-			Parent:      r.Parent, //nolint:staticcheck // ignore SA1019 (Parent field is deprecated)
 			Parents:     r.Parents,
 			Type:        r.RecordType,
 			Description: r.Description,
@@ -187,7 +186,7 @@ func (b *Builder) DiskUsage(ctx context.Context) ([]*build.CacheRecord, error) {
 }
 
 // Prune clears all reclaimable build cache.
-func (b *Builder) Prune(ctx context.Context, opts build.CachePruneOptions) (int64, []string, error) {
+func (b *Builder) Prune(ctx context.Context, opts buildbackend.CachePruneOptions) (int64, []string, error) {
 	ch := make(chan *controlapi.UsageRecord)
 
 	eg, ctx := errgroup.WithContext(ctx)
@@ -242,7 +241,7 @@ func (b *Builder) Prune(ctx context.Context, opts build.CachePruneOptions) (int6
 }
 
 // Build executes a build request
-func (b *Builder) Build(ctx context.Context, opt backend.BuildConfig) (*builder.Result, error) {
+func (b *Builder) Build(ctx context.Context, opt buildbackend.BuildConfig) (*builder.Result, error) {
 	if len(opt.Options.Outputs) > 1 {
 		return nil, errors.Errorf("multiple outputs not supported")
 	}
@@ -641,7 +640,7 @@ func toBuildkitUlimits(inp []*container.Ulimit) (string, error) {
 	return strings.Join(ulimits, ","), nil
 }
 
-func toBuildkitPruneInfo(opts build.CachePruneOptions) (client.PruneInfo, error) {
+func toBuildkitPruneInfo(opts buildbackend.CachePruneOptions) (client.PruneInfo, error) {
 	var until time.Duration
 	untilValues := opts.Filters.Get("until")          // canonical
 	unusedForValues := opts.Filters.Get("unused-for") // deprecated synonym for "until" filter
@@ -694,10 +693,6 @@ func toBuildkitPruneInfo(opts build.CachePruneOptions) (client.PruneInfo, error)
 				return client.PruneInfo{}, errMultipleFilterValues{}
 			}
 		}
-	}
-
-	if opts.ReservedSpace == 0 && opts.KeepStorage != 0 {
-		opts.ReservedSpace = opts.KeepStorage
 	}
 
 	return client.PruneInfo{

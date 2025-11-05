@@ -5,17 +5,22 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/containerd/log"
+	"github.com/golang/gddo/httputil"
+	"github.com/moby/moby/api/pkg/authconfig"
+	"github.com/moby/moby/api/types"
 	buildtypes "github.com/moby/moby/api/types/build"
 	"github.com/moby/moby/api/types/events"
-	"github.com/moby/moby/api/types/filters"
 	"github.com/moby/moby/api/types/registry"
 	"github.com/moby/moby/api/types/swarm"
 	"github.com/moby/moby/api/types/system"
-	"github.com/moby/moby/api/types/versions"
+	"github.com/moby/moby/v2/daemon/internal/compat"
+	"github.com/moby/moby/v2/daemon/internal/filters"
 	"github.com/moby/moby/v2/daemon/internal/timestamp"
+	"github.com/moby/moby/v2/daemon/internal/versions"
 	"github.com/moby/moby/v2/daemon/server/backend"
 	"github.com/moby/moby/v2/daemon/server/httputils"
 	"github.com/moby/moby/v2/daemon/server/router/build"
@@ -60,7 +65,7 @@ func (s *systemRouter) swarmStatus() string {
 
 func (s *systemRouter) getInfo(ctx context.Context, w http.ResponseWriter, r *http.Request, vars map[string]string) error {
 	version := httputils.VersionFromContext(ctx)
-	info, _, _ := s.collectSystemInfo.Do(ctx, version, func(ctx context.Context) (*infoResponse, error) {
+	info, _, _ := s.collectSystemInfo.Do(ctx, version, func(ctx context.Context) (*compat.Wrapper, error) {
 		info, err := s.backend.SystemInfo(ctx)
 		if err != nil {
 			return nil, err
@@ -71,26 +76,7 @@ func (s *systemRouter) getInfo(ctx context.Context, w http.ResponseWriter, r *ht
 			info.Warnings = append(info.Warnings, info.Swarm.Warnings...)
 		}
 
-		if versions.LessThan(version, "1.25") {
-			// TODO: handle this conversion in engine-api
-			kvSecOpts, err := system.DecodeSecurityOptions(info.SecurityOptions)
-			if err != nil {
-				info.Warnings = append(info.Warnings, err.Error())
-			}
-			var nameOnly []string
-			for _, so := range kvSecOpts {
-				nameOnly = append(nameOnly, so.Name)
-			}
-			info.SecurityOptions = nameOnly
-		}
-		if versions.LessThan(version, "1.39") {
-			if info.KernelVersion == "" {
-				info.KernelVersion = "<unknown>"
-			}
-			if info.OperatingSystem == "" {
-				info.OperatingSystem = "<unknown>"
-			}
-		}
+		var legacyOptions []compat.Option
 		if versions.LessThan(version, "1.44") {
 			for k, rt := range info.Runtimes {
 				// Status field introduced in API v1.44.
@@ -104,38 +90,36 @@ func (s *systemRouter) getInfo(ctx context.Context, w http.ResponseWriter, r *ht
 		if versions.LessThan(version, "1.47") {
 			// Field is omitted in API 1.48 and up, but should still be included
 			// in older versions, even if no values are set.
-			info.RegistryConfig.ExtraFields = map[string]any{
-				"AllowNondistributableArtifactsCIDRs":     json.RawMessage(nil),
-				"AllowNondistributableArtifactsHostnames": json.RawMessage(nil),
-			}
+			legacyOptions = append(legacyOptions, compat.WithExtraFields(map[string]any{
+				"RegistryConfig": map[string]any{
+					"AllowNondistributableArtifactsCIDRs":     json.RawMessage(nil),
+					"AllowNondistributableArtifactsHostnames": json.RawMessage(nil),
+				},
+			}))
 		}
 		if versions.LessThan(version, "1.49") {
 			// FirewallBackend field introduced in API v1.49.
 			info.FirewallBackend = nil
-		}
 
-		extraFields := map[string]any{}
-		if versions.LessThan(version, "1.49") {
 			// Expected commits are omitted in API 1.49, but should still be
 			// included in older versions.
-			info.ContainerdCommit.Expected = info.ContainerdCommit.ID //nolint:staticcheck // ignore SA1019: field is deprecated, but still used on API < v1.49.
-			info.RuncCommit.Expected = info.RuncCommit.ID             //nolint:staticcheck // ignore SA1019: field is deprecated, but still used on API < v1.49.
-			info.InitCommit.Expected = info.InitCommit.ID             //nolint:staticcheck // ignore SA1019: field is deprecated, but still used on API < v1.49.
-		}
-		if versions.GreaterThanOrEqualTo(version, "1.42") {
-			info.KernelMemory = false
+			legacyOptions = append(legacyOptions, compat.WithExtraFields(map[string]any{
+				"ContainerdCommit": map[string]any{"Expected": info.ContainerdCommit.ID},
+				"RuncCommit":       map[string]any{"Expected": info.RuncCommit.ID},
+				"InitCommit":       map[string]any{"Expected": info.InitCommit.ID},
+			}))
 		}
 		if versions.LessThan(version, "1.50") {
 			info.DiscoveredDevices = nil
 
 			// These fields are omitted in > API 1.49, and always false
 			// older API versions.
-			extraFields = map[string]any{
+			legacyOptions = append(legacyOptions, compat.WithExtraFields(map[string]any{
 				"BridgeNfIptables":  json.RawMessage("false"),
 				"BridgeNfIp6tables": json.RawMessage("false"),
-			}
+			}))
 		}
-		return &infoResponse{Info: info, extraFields: extraFields}, nil
+		return compat.Wrap(info, legacyOptions...), nil
 	})
 
 	return httputils.WriteJSON(w, http.StatusOK, info)
@@ -178,6 +162,21 @@ func (s *systemRouter) getDiskUsage(ctx context.Context, w http.ResponseWriter, 
 		}
 	}
 
+	// To maintain backwards compatibility with older clients, when communicating with API versions prior to 1.52,
+	// verbose mode is always enabled. For API 1.52 and onwards, if the "verbose" query parameter is not set,
+	// assume legacy fields should be included.
+	var verbose, legacyFields bool
+	if v := r.Form.Get("verbose"); versions.GreaterThanOrEqualTo(version, "1.52") && v != "" {
+		var err error
+		verbose, err = strconv.ParseBool(v)
+		if err != nil {
+			return invalidRequestError{Err: fmt.Errorf("invalid value for verbose: %s", v)}
+		}
+	} else {
+		// In versions prior to 1.52, legacy fields were always included.
+		legacyFields, verbose = true, true
+	}
+
 	eg, ctx := errgroup.WithContext(ctx)
 
 	var systemDiskUsage *backend.DiskUsage
@@ -188,6 +187,7 @@ func (s *systemRouter) getDiskUsage(ctx context.Context, w http.ResponseWriter, 
 				Containers: getContainers,
 				Images:     getImages,
 				Volumes:    getVolumes,
+				Verbose:    verbose,
 			})
 			return err
 		})
@@ -214,56 +214,81 @@ func (s *systemRouter) getDiskUsage(ctx context.Context, w http.ResponseWriter, 
 		return err
 	}
 
-	var builderSize int64
-	if versions.LessThan(version, "1.42") {
-		for _, b := range buildCache {
-			builderSize += b.Size
-			// Parents field was added in API 1.42 to replace the Parent field.
-			b.Parents = nil
-		}
-	}
-	if versions.GreaterThanOrEqualTo(version, "1.42") {
-		for _, b := range buildCache {
-			// Parent field is deprecated in API v1.42 and up, as it is deprecated
-			// in BuildKit. Empty the field to omit it in the API response.
-			b.Parent = "" //nolint:staticcheck // ignore SA1019 (Parent field is deprecated)
-		}
-	}
-	if versions.LessThan(version, "1.44") && systemDiskUsage != nil && systemDiskUsage.Images != nil {
-		for _, b := range systemDiskUsage.Images.Items {
-			b.VirtualSize = b.Size //nolint:staticcheck // ignore SA1019: field is deprecated, but still set on API < v1.44.
-		}
-	}
-
-	du := backend.DiskUsage{}
-	if getBuildCache {
-		du.BuildCache = &buildtypes.CacheDiskUsage{
-			TotalSize: builderSize,
-			Items:     buildCache,
-		}
-	}
-	if systemDiskUsage != nil {
-		du.Images = systemDiskUsage.Images
-		du.Containers = systemDiskUsage.Containers
-		du.Volumes = systemDiskUsage.Volumes
-	}
-
-	// Use the old struct for the API return value.
 	var v system.DiskUsage
-	if du.Images != nil {
-		v.LayersSize = du.Images.TotalSize
-		v.Images = du.Images.Items
+	if systemDiskUsage != nil && systemDiskUsage.Images != nil {
+		v.ImageUsage = &system.ImagesDiskUsage{
+			ActiveImages: systemDiskUsage.Images.ActiveCount,
+			Reclaimable:  systemDiskUsage.Images.Reclaimable,
+			TotalImages:  systemDiskUsage.Images.TotalCount,
+			TotalSize:    systemDiskUsage.Images.TotalSize,
+		}
+
+		if legacyFields {
+			v.LayersSize = systemDiskUsage.Images.TotalSize //nolint: staticcheck,SA1019: v.LayersSize is deprecated: kept to maintain backwards compatibility with API < v1.52, use [ImagesDiskUsage.TotalSize] instead.
+			v.Images = systemDiskUsage.Images.Items         //nolint: staticcheck,SA1019: v.Images is deprecated: kept to maintain backwards compatibility with API < v1.52, use [ImagesDiskUsage.Items] instead.
+		} else if verbose {
+			v.ImageUsage.Items = systemDiskUsage.Images.Items
+		}
 	}
-	if du.Containers != nil {
-		v.Containers = du.Containers.Items
+	if systemDiskUsage != nil && systemDiskUsage.Containers != nil {
+		v.ContainerUsage = &system.ContainersDiskUsage{
+			ActiveContainers: systemDiskUsage.Containers.ActiveCount,
+			Reclaimable:      systemDiskUsage.Containers.Reclaimable,
+			TotalContainers:  systemDiskUsage.Containers.TotalCount,
+			TotalSize:        systemDiskUsage.Containers.TotalSize,
+		}
+
+		if legacyFields {
+			v.Containers = systemDiskUsage.Containers.Items //nolint: staticcheck,SA1019: v.Containers is deprecated: kept to maintain backwards compatibility with API < v1.52, use [ContainersDiskUsage.Items] instead.
+		} else if verbose {
+			v.ContainerUsage.Items = systemDiskUsage.Containers.Items
+		}
 	}
-	if du.Volumes != nil {
-		v.Volumes = du.Volumes.Items
+	if systemDiskUsage != nil && systemDiskUsage.Volumes != nil {
+		v.VolumeUsage = &system.VolumesDiskUsage{
+			ActiveVolumes: systemDiskUsage.Volumes.ActiveCount,
+			TotalSize:     systemDiskUsage.Volumes.TotalSize,
+			Reclaimable:   systemDiskUsage.Volumes.Reclaimable,
+			TotalVolumes:  systemDiskUsage.Volumes.TotalCount,
+		}
+
+		if legacyFields {
+			v.Volumes = systemDiskUsage.Volumes.Items //nolint: staticcheck,SA1019: v.Volumes is deprecated: kept to maintain backwards compatibility with API < v1.52, use [VolumesDiskUsage.Items] instead.
+		} else if verbose {
+			v.VolumeUsage.Items = systemDiskUsage.Volumes.Items
+		}
 	}
-	if du.BuildCache != nil {
-		v.BuildCache = du.BuildCache.Items
+	if getBuildCache {
+		v.BuildCacheUsage = &system.BuildCacheDiskUsage{
+			TotalBuildCacheRecords: int64(len(buildCache)),
+		}
+
+		activeCount := v.BuildCacheUsage.TotalBuildCacheRecords
+		var totalSize, reclaimable int64
+
+		for _, b := range buildCache {
+			if versions.LessThan(version, "1.42") {
+				totalSize += b.Size
+			}
+
+			if !b.InUse {
+				activeCount--
+			}
+			if !b.InUse && !b.Shared {
+				reclaimable += b.Size
+			}
+		}
+
+		v.BuildCacheUsage.ActiveBuildCacheRecords = activeCount
+		v.BuildCacheUsage.TotalSize = totalSize
+		v.BuildCacheUsage.Reclaimable = reclaimable
+
+		if legacyFields {
+			v.BuildCache = buildCache //nolint: staticcheck,SA1019: v.BuildCache is deprecated: kept to maintain backwards compatibility with API < v1.52, use [BuildCacheDiskUsage.Items] instead.
+		} else if verbose {
+			v.BuildCacheUsage.Items = buildCache
+		}
 	}
-	v.BuilderSize = builderSize
 	return httputils.WriteJSON(w, http.StatusOK, v)
 }
 
@@ -317,13 +342,17 @@ func (s *systemRouter) getEvents(ctx context.Context, w http.ResponseWriter, r *
 		return err
 	}
 
-	w.Header().Set("Content-Type", "application/json")
+	contentType := httputil.NegotiateContentType(r, []string{
+		types.MediaTypeNDJSON,
+		types.MediaTypeJSONSequence,
+	}, types.MediaTypeJSON) // output isn't actually JSON but API used to  this content-type
+	w.Header().Set("Content-Type", contentType)
 	w.WriteHeader(http.StatusOK)
 	output := ioutils.NewWriteFlusher(w)
 	defer output.Close()
 	output.Flush()
 
-	enc := json.NewEncoder(output)
+	encode := httputils.NewJSONStreamEncoder(output, contentType)
 
 	buffered, l := s.backend.SubscribeToEvents(since, until, ef)
 	defer s.backend.UnsubscribeFromEvents(l)
@@ -332,15 +361,26 @@ func (s *systemRouter) getEvents(ctx context.Context, w http.ResponseWriter, r *
 	if versions.LessThan(httputils.VersionFromContext(ctx), "1.46") {
 		// Image create events were added in API 1.46
 		shouldSkip = func(ev events.Message) bool {
-			return ev.Type == "image" && ev.Action == "create"
+			return ev.Type == events.ImageEventType && ev.Action == events.ActionCreate
 		}
+	}
+
+	var includeLegacyFields bool
+	if versions.LessThan(httputils.VersionFromContext(ctx), "1.52") {
+		includeLegacyFields = true
 	}
 
 	for _, ev := range buffered {
 		if shouldSkip(ev) {
 			continue
 		}
-		if err := enc.Encode(ev); err != nil {
+		if includeLegacyFields {
+			if err := encode(backFillLegacy(&ev)); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := encode(ev); err != nil {
 			return err
 		}
 	}
@@ -360,7 +400,13 @@ func (s *systemRouter) getEvents(ctx context.Context, w http.ResponseWriter, r *
 			if shouldSkip(jev) {
 				continue
 			}
-			if err := enc.Encode(jev); err != nil {
+			if includeLegacyFields {
+				if err := encode(backFillLegacy(&jev)); err != nil {
+					return err
+				}
+				continue
+			}
+			if err := encode(jev); err != nil {
 				return err
 			}
 		case <-timeout:
@@ -373,9 +419,7 @@ func (s *systemRouter) getEvents(ctx context.Context, w http.ResponseWriter, r *
 }
 
 func (s *systemRouter) postAuth(ctx context.Context, w http.ResponseWriter, r *http.Request, vars map[string]string) error {
-	var config *registry.AuthConfig
-	err := json.NewDecoder(r.Body).Decode(&config)
-	r.Body.Close()
+	config, err := authconfig.DecodeRequestBody(r.Body)
 	if err != nil {
 		return err
 	}
@@ -383,7 +427,7 @@ func (s *systemRouter) postAuth(ctx context.Context, w http.ResponseWriter, r *h
 	if err != nil {
 		return err
 	}
-	return httputils.WriteJSON(w, http.StatusOK, &registry.AuthenticateOKBody{
+	return httputils.WriteJSON(w, http.StatusOK, &registry.AuthResponse{
 		Status:        "Login Succeeded",
 		IdentityToken: token,
 	})
@@ -398,4 +442,26 @@ func eventTime(formTime string) (time.Time, error) {
 		return time.Time{}, nil
 	}
 	return time.Unix(t, tNano), nil
+}
+
+// These fields were deprecated in docker v1.10, API v1.22, but not removed
+// from the API responses. Unfortunately, the Docker CLI (and compose indirectly),
+// continued using these fields up until v25.0.0, and panic if the fields are
+// omitted, or left empty (due to a bug), see: https://github.com/moby/moby/pull/50832#issuecomment-3276600925
+func backFillLegacy(ev *events.Message) any {
+	switch ev.Type {
+	case events.ContainerEventType:
+		return compat.Wrap(ev, compat.WithExtraFields(map[string]any{
+			"id":     ev.Actor.ID,
+			"status": ev.Action,
+			"from":   ev.Actor.Attributes["image"],
+		}))
+	case events.ImageEventType:
+		return compat.Wrap(ev, compat.WithExtraFields(map[string]any{
+			"id":     ev.Actor.ID,
+			"status": ev.Action,
+		}))
+	default:
+		return &ev
+	}
 }

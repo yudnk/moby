@@ -8,10 +8,11 @@ import (
 
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/containerd/log"
-	"github.com/moby/moby/api/types/filters"
-	"github.com/moby/moby/api/types/versions"
 	"github.com/moby/moby/api/types/volume"
+	"github.com/moby/moby/v2/daemon/internal/filters"
+	"github.com/moby/moby/v2/daemon/internal/versions"
 	"github.com/moby/moby/v2/daemon/server/httputils"
+	"github.com/moby/moby/v2/daemon/server/volumebackend"
 	"github.com/moby/moby/v2/daemon/volume/service/opts"
 	"github.com/moby/moby/v2/errdefs"
 	"github.com/pkg/errors"
@@ -39,7 +40,7 @@ func (v *volumeRouter) getVolumesList(ctx context.Context, w http.ResponseWriter
 
 	version := httputils.VersionFromContext(ctx)
 	if versions.GreaterThanOrEqualTo(version, clusterVolumesVersion) && v.cluster.IsManager() {
-		clusterVolumes, swarmErr := v.cluster.GetVolumes(volume.ListOptions{Filters: f})
+		clusterVolumes, swarmErr := v.cluster.GetVolumes(volumebackend.ListOptions{Filters: f})
 		if swarmErr != nil {
 			// if there is a swarm error, we may not want to error out right
 			// away. the local list probably worked. instead, let's do what we
@@ -93,7 +94,7 @@ func (v *volumeRouter) postVolumesCreate(ctx context.Context, w http.ResponseWri
 		return err
 	}
 
-	var req volume.CreateOptions
+	var req volume.CreateRequest
 	if err := httputils.ReadJSON(r, &req); err != nil {
 		return err
 	}
@@ -146,7 +147,7 @@ func (v *volumeRouter) putVolumesUpdate(ctx context.Context, w http.ResponseWrit
 		return errdefs.InvalidParameter(err)
 	}
 
-	var req volume.UpdateOptions
+	var req volumebackend.UpdateOptions
 	if err := httputils.ReadJSON(r, &req); err != nil {
 		return err
 	}

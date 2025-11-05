@@ -7,12 +7,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/moby/moby/api/types/build"
-	"github.com/moby/moby/client/pkg/jsonmessage"
+	"github.com/moby/moby/api/types/jsonstream"
+	"github.com/moby/moby/client"
 	"github.com/moby/moby/v2/integration/internal/requirement"
-	"github.com/moby/moby/v2/testutil"
-	"github.com/moby/moby/v2/testutil/daemon"
-	"github.com/moby/moby/v2/testutil/fakecontext"
+	"github.com/moby/moby/v2/internal/testutil"
+	"github.com/moby/moby/v2/internal/testutil/daemon"
+	"github.com/moby/moby/v2/internal/testutil/fakecontext"
 	"gotest.tools/v3/assert"
 	"gotest.tools/v3/skip"
 )
@@ -23,7 +23,7 @@ func getCgroupFromBuildOutput(buildOutput io.Reader) (string, error) {
 
 	dec := json.NewDecoder(buildOutput)
 	for {
-		m := jsonmessage.JSONMessage{}
+		m := jsonstream.Message{}
 		err := dec.Decode(&m)
 		if err == io.EOF {
 			return "", nil
@@ -51,14 +51,12 @@ func testBuildWithCgroupNs(ctx context.Context, t *testing.T, daemonNsMode strin
 	source := fakecontext.New(t, "", fakecontext.WithDockerfile(dockerfile))
 	defer source.Close()
 
-	client := d.NewClientT(t)
-	resp, err := client.ImageBuild(ctx,
-		source.AsTarReader(t),
-		build.ImageBuildOptions{
-			Remove:      true,
-			ForceRemove: true,
-			Tags:        []string{"buildcgroupns"},
-		})
+	apiClient := d.NewClientT(t)
+	resp, err := apiClient.ImageBuild(ctx, source.AsTarReader(t), client.ImageBuildOptions{
+		Remove:      true,
+		ForceRemove: true,
+		Tags:        []string{"buildcgroupns"},
+	})
 	assert.NilError(t, err)
 	defer resp.Body.Close()
 

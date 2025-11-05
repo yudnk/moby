@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/google/go-cmp/cmp/cmpopts"
-	containertypes "github.com/moby/moby/api/types/container"
 	networktypes "github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/client"
 	"github.com/moby/moby/v2/daemon/libnetwork/drivers/bridge"
@@ -27,10 +26,11 @@ import (
 	"github.com/moby/moby/v2/integration/internal/network"
 	"github.com/moby/moby/v2/integration/internal/testutils/networking"
 	n "github.com/moby/moby/v2/integration/network"
-	"github.com/moby/moby/v2/testutil"
-	"github.com/moby/moby/v2/testutil/daemon"
+	"github.com/moby/moby/v2/internal/testutil"
+	"github.com/moby/moby/v2/internal/testutil/daemon"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
+	"gotest.tools/v3/icmd"
 	"gotest.tools/v3/skip"
 )
 
@@ -49,7 +49,7 @@ func TestBridgeICC(t *testing.T) {
 
 	testcases := []struct {
 		name           string
-		bridgeOpts     []func(*networktypes.CreateOptions)
+		bridgeOpts     []func(*client.NetworkCreateOptions)
 		ctr1MacAddress string
 		isIPv6         bool
 		isLinkLocal    bool
@@ -57,17 +57,17 @@ func TestBridgeICC(t *testing.T) {
 	}{
 		{
 			name:       "IPv4 non-internal network",
-			bridgeOpts: []func(*networktypes.CreateOptions){},
+			bridgeOpts: []func(*client.NetworkCreateOptions){},
 		},
 		{
 			name: "IPv4 internal network",
-			bridgeOpts: []func(*networktypes.CreateOptions){
+			bridgeOpts: []func(*client.NetworkCreateOptions){
 				network.WithInternal(),
 			},
 		},
 		{
 			name: "IPv6 ULA on non-internal network",
-			bridgeOpts: []func(*networktypes.CreateOptions){
+			bridgeOpts: []func(*client.NetworkCreateOptions){
 				network.WithIPv6(),
 				network.WithIPAM("fdf1:a844:380c:b200::/64", "fdf1:a844:380c:b200::1"),
 			},
@@ -75,7 +75,7 @@ func TestBridgeICC(t *testing.T) {
 		},
 		{
 			name: "IPv6 ULA on internal network",
-			bridgeOpts: []func(*networktypes.CreateOptions){
+			bridgeOpts: []func(*client.NetworkCreateOptions){
 				network.WithIPv6(),
 				network.WithInternal(),
 				network.WithIPAM("fdf1:a844:380c:b247::/64", "fdf1:a844:380c:b247::1"),
@@ -84,7 +84,7 @@ func TestBridgeICC(t *testing.T) {
 		},
 		{
 			name: "IPv6 link-local address on non-internal network",
-			bridgeOpts: []func(*networktypes.CreateOptions){
+			bridgeOpts: []func(*client.NetworkCreateOptions){
 				network.WithIPv6(),
 				// There's no real way to specify an IPv6 network is only used with SLAAC link-local IPv6 addresses.
 				// What we can do instead, is to tell the IPAM driver to assign addresses from the link-local prefix.
@@ -97,7 +97,7 @@ func TestBridgeICC(t *testing.T) {
 		},
 		{
 			name: "IPv6 link-local address on internal network",
-			bridgeOpts: []func(*networktypes.CreateOptions){
+			bridgeOpts: []func(*client.NetworkCreateOptions){
 				network.WithIPv6(),
 				network.WithInternal(),
 				// See the note above about link-local addresses.
@@ -115,7 +115,7 @@ func TestBridgeICC(t *testing.T) {
 			//   addresses need not be qualified with a zone index."
 			// So, for this common case, LL addresses should be included in DNS config.
 			name: "IPv6 link-local address on non-internal network ping by name",
-			bridgeOpts: []func(*networktypes.CreateOptions){
+			bridgeOpts: []func(*client.NetworkCreateOptions){
 				network.WithIPv6(),
 				network.WithIPAM("fe80::/64", "fe80::1"),
 			},
@@ -128,7 +128,7 @@ func TestBridgeICC(t *testing.T) {
 			// configure two networks with the same LL subnet, although perhaps it should
 			// be). So, again, no zone index is required and the LL address should be
 			// included in DNS config.
-			bridgeOpts: []func(*networktypes.CreateOptions){
+			bridgeOpts: []func(*client.NetworkCreateOptions){
 				network.WithIPv6(),
 				network.WithIPAM("fe80:1234::/64", "fe80:1234::1"),
 			},
@@ -136,7 +136,7 @@ func TestBridgeICC(t *testing.T) {
 		},
 		{
 			name: "IPv6 non-internal network with SLAAC LL address",
-			bridgeOpts: []func(*networktypes.CreateOptions){
+			bridgeOpts: []func(*client.NetworkCreateOptions){
 				network.WithIPv6(),
 				network.WithIPAM("fdf1:a844:380c:b247::/64", "fdf1:a844:380c:b247::1"),
 			},
@@ -148,7 +148,7 @@ func TestBridgeICC(t *testing.T) {
 		},
 		{
 			name: "IPv6 internal network with SLAAC LL address",
-			bridgeOpts: []func(*networktypes.CreateOptions){
+			bridgeOpts: []func(*client.NetworkCreateOptions){
 				network.WithIPv6(),
 				network.WithIPAM("fdf1:a844:380c:b247::/64", "fdf1:a844:380c:b247::1"),
 			},
@@ -180,7 +180,7 @@ func TestBridgeICC(t *testing.T) {
 				container.WithImage("busybox:latest"),
 				container.WithCmd("top"),
 				container.WithNetworkMode(bridgeName))...)
-			defer c.ContainerRemove(ctx, id1, containertypes.RemoveOptions{
+			defer c.ContainerRemove(ctx, id1, client.ContainerRemoveOptions{
 				Force: true,
 			})
 
@@ -190,7 +190,7 @@ func TestBridgeICC(t *testing.T) {
 			if pingHost == "" {
 				if tc.isLinkLocal {
 					inspect := container.Inspect(ctx, t, c, id1)
-					pingHost = inspect.NetworkSettings.Networks[bridgeName].GlobalIPv6Address + "%eth0"
+					pingHost = inspect.NetworkSettings.Networks[bridgeName].GlobalIPv6Address.WithZone("eth0").String()
 				} else {
 					pingHost = ctr1Name
 				}
@@ -211,7 +211,7 @@ func TestBridgeICC(t *testing.T) {
 				container.WithImage("busybox:latest"),
 				container.WithCmd(pingCmd...),
 				container.WithNetworkMode(bridgeName))
-			defer c.ContainerRemove(ctx, res.ContainerID, containertypes.RemoveOptions{
+			defer c.ContainerRemove(ctx, res.ContainerID, client.ContainerRemoveOptions{
 				Force: true,
 			})
 
@@ -234,8 +234,8 @@ func TestBridgeINC(t *testing.T) {
 	defer c.Close()
 
 	type bridgesOpts struct {
-		bridge1Opts []func(*networktypes.CreateOptions)
-		bridge2Opts []func(*networktypes.CreateOptions)
+		bridge1Opts []func(*client.NetworkCreateOptions)
+		bridge2Opts []func(*client.NetworkCreateOptions)
 	}
 
 	testcases := []struct {
@@ -248,27 +248,27 @@ func TestBridgeINC(t *testing.T) {
 		{
 			name: "IPv4 non-internal network",
 			bridges: bridgesOpts{
-				bridge1Opts: []func(*networktypes.CreateOptions){},
-				bridge2Opts: []func(*networktypes.CreateOptions){},
+				bridge1Opts: []func(*client.NetworkCreateOptions){},
+				bridge2Opts: []func(*client.NetworkCreateOptions){},
 			},
 			stdout: "1 packets transmitted, 0 packets received",
 		},
 		{
 			name: "IPv4 internal network",
 			bridges: bridgesOpts{
-				bridge1Opts: []func(*networktypes.CreateOptions){network.WithInternal()},
-				bridge2Opts: []func(*networktypes.CreateOptions){network.WithInternal()},
+				bridge1Opts: []func(*client.NetworkCreateOptions){network.WithInternal()},
+				bridge2Opts: []func(*client.NetworkCreateOptions){network.WithInternal()},
 			},
 			stderr: "sendto: Network is unreachable",
 		},
 		{
 			name: "IPv6 ULA on non-internal network",
 			bridges: bridgesOpts{
-				bridge1Opts: []func(*networktypes.CreateOptions){
+				bridge1Opts: []func(*client.NetworkCreateOptions){
 					network.WithIPv6(),
 					network.WithIPAM("fdf1:a844:380c:b200::/64", "fdf1:a844:380c:b200::1"),
 				},
-				bridge2Opts: []func(*networktypes.CreateOptions){
+				bridge2Opts: []func(*client.NetworkCreateOptions){
 					network.WithIPv6(),
 					network.WithIPAM("fdf1:a844:380c:b247::/64", "fdf1:a844:380c:b247::1"),
 				},
@@ -279,12 +279,12 @@ func TestBridgeINC(t *testing.T) {
 		{
 			name: "IPv6 ULA on internal network",
 			bridges: bridgesOpts{
-				bridge1Opts: []func(*networktypes.CreateOptions){
+				bridge1Opts: []func(*client.NetworkCreateOptions){
 					network.WithIPv6(),
 					network.WithInternal(),
 					network.WithIPAM("fdf1:a844:390c:b200::/64", "fdf1:a844:390c:b200::1"),
 				},
-				bridge2Opts: []func(*networktypes.CreateOptions){
+				bridge2Opts: []func(*client.NetworkCreateOptions){
 					network.WithIPv6(),
 					network.WithInternal(),
 					network.WithIPAM("fdf1:a844:390c:b247::/64", "fdf1:a844:390c:b247::1"),
@@ -317,7 +317,7 @@ func TestBridgeINC(t *testing.T) {
 				container.WithImage("busybox:latest"),
 				container.WithCmd("top"),
 				container.WithNetworkMode(bridge1))
-			defer c.ContainerRemove(ctx, id1, containertypes.RemoveOptions{
+			defer c.ContainerRemove(ctx, id1, client.ContainerRemoveOptions{
 				Force: true,
 			})
 			networking.FirewalldReload(t, d)
@@ -328,7 +328,7 @@ func TestBridgeINC(t *testing.T) {
 				targetAddr = ctr1Info.NetworkSettings.Networks[bridge1].GlobalIPv6Address
 			}
 
-			pingCmd := []string{"ping", "-c1", "-W3", targetAddr}
+			pingCmd := []string{"ping", "-c1", "-W3", targetAddr.String()}
 
 			ctr2Name := sanitizeCtrName(t.Name() + "-ctr2")
 			attachCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -338,7 +338,7 @@ func TestBridgeINC(t *testing.T) {
 				container.WithImage("busybox:latest"),
 				container.WithCmd(pingCmd...),
 				container.WithNetworkMode(bridge2))
-			defer c.ContainerRemove(ctx, res.ContainerID, containertypes.RemoveOptions{
+			defer c.ContainerRemove(ctx, res.ContainerID, client.ContainerRemoveOptions{
 				Force: true,
 			})
 
@@ -387,10 +387,10 @@ func TestBridgeINCRouted(t *testing.T) {
 			container.WithNetworkMode(netName),
 			container.WithName("ctr-"+gwMode),
 			container.WithExposedPorts("80/tcp"),
-			container.WithPortMap(containertypes.PortMap{"80/tcp": {}}),
+			container.WithPortMap(networktypes.PortMap{networktypes.MustParsePort("80/tcp"): {}}),
 		)
 		t.Cleanup(func() {
-			c.ContainerRemove(ctx, ctrId, containertypes.RemoveOptions{Force: true})
+			c.ContainerRemove(ctx, ctrId, client.ContainerRemoveOptions{Force: true})
 		})
 
 		container.ExecT(ctx, t, c, ctrId, []string{"httpd", "-p", "80"})
@@ -399,8 +399,8 @@ func TestBridgeINCRouted(t *testing.T) {
 		insp := container.Inspect(ctx, t, c, ctrId)
 		return ctrDesc{
 			id:   ctrId,
-			ipv4: insp.NetworkSettings.Networks[netName].IPAddress,
-			ipv6: insp.NetworkSettings.Networks[netName].GlobalIPv6Address,
+			ipv4: insp.NetworkSettings.Networks[netName].IPAddress.String(),
+			ipv6: insp.NetworkSettings.Networks[netName].GlobalIPv6Address.String(),
 		}
 	}
 
@@ -564,10 +564,10 @@ func TestAccessToPublishedPort(t *testing.T) {
 				container.WithNetworkMode(serverNetName),
 				container.WithName("ctr-server"),
 				container.WithExposedPorts("80/tcp"),
-				container.WithPortMap(containertypes.PortMap{"80/tcp": {containertypes.PortBinding{HostPort: "8080"}}}),
+				container.WithPortMap(networktypes.PortMap{networktypes.MustParsePort("80/tcp"): {networktypes.PortBinding{HostPort: "8080"}}}),
 				container.WithCmd("httpd", "-f"),
 			)
-			defer c.ContainerRemove(ctx, ctrId, containertypes.RemoveOptions{Force: true})
+			defer c.ContainerRemove(ctx, ctrId, client.ContainerRemoveOptions{Force: true})
 
 			const clientNetName = "tnet-client"
 			network.CreateNoError(ctx, t, c, clientNetName,
@@ -584,15 +584,15 @@ func TestAccessToPublishedPort(t *testing.T) {
 			// Use the default bridge addresses as host addresses (like "host-gateway", but
 			// there's no way to tell wget to prefer ipv4/ipv6 transport, so just use the
 			// addresses directly).
-			insp, err := c.NetworkInspect(ctx, "bridge", networktypes.InspectOptions{})
+			res, err := c.NetworkInspect(ctx, "bridge", client.NetworkInspectOptions{})
 			assert.NilError(t, err)
-			for _, ipamCfg := range insp.IPAM.Config {
+			for _, ipamCfg := range res.Network.IPAM.Config {
 				ipv := "ipv4"
-				if strings.Contains(ipamCfg.Gateway, ":") {
+				if ipamCfg.Gateway.Is6() {
 					ipv = "ipv6"
 				}
 				t.Run(ipv, func(t *testing.T) {
-					url := "http://" + net.JoinHostPort(ipamCfg.Gateway, "8080")
+					url := "http://" + net.JoinHostPort(ipamCfg.Gateway.String(), "8080")
 					res := container.RunAttach(ctx, t, c,
 						container.WithNetworkMode(clientNetName),
 						container.WithCmd("wget", "-O-", "-T3", url),
@@ -687,10 +687,10 @@ func TestInterNetworkDirectRouting(t *testing.T) {
 				container.WithNetworkMode(serverNetName),
 				container.WithName("ctr-pub"),
 				container.WithExposedPorts("80/tcp"),
-				container.WithPortMap(containertypes.PortMap{"80/tcp": {containertypes.PortBinding{HostPort: "8080"}}}),
+				container.WithPortMap(networktypes.PortMap{networktypes.MustParsePort("80/tcp"): {networktypes.PortBinding{HostPort: "8080"}}}),
 				container.WithCmd("httpd", "-f"),
 			)
-			defer c.ContainerRemove(ctx, ctrPubId, containertypes.RemoveOptions{Force: true})
+			defer c.ContainerRemove(ctx, ctrPubId, client.ContainerRemoveOptions{Force: true})
 			inspPub := container.Inspect(ctx, t, c, ctrPubId)
 			pub4 := inspPub.NetworkSettings.Networks[serverNetName].IPAddress
 			pub6 := inspPub.NetworkSettings.Networks[serverNetName].GlobalIPv6Address
@@ -700,7 +700,7 @@ func TestInterNetworkDirectRouting(t *testing.T) {
 				container.WithName("ctr-unpub"),
 				container.WithCmd("httpd", "-f"),
 			)
-			defer c.ContainerRemove(ctx, ctrUnpubId, containertypes.RemoveOptions{Force: true})
+			defer c.ContainerRemove(ctx, ctrUnpubId, client.ContainerRemoveOptions{Force: true})
 			inspUnpub := container.Inspect(ctx, t, c, ctrUnpubId)
 			unpub4 := inspUnpub.NetworkSettings.Networks[serverNetName].IPAddress
 			unpub6 := inspUnpub.NetworkSettings.Networks[serverNetName].GlobalIPv6Address
@@ -731,10 +731,10 @@ func TestInterNetworkDirectRouting(t *testing.T) {
 				}
 			}
 			t.Run("w", func(t *testing.T) { // Wait for the parallel tests to complete.
-				t.Run("ipv4/pub", checkHTTP(pub4, tc.expPubResp))
-				t.Run("ipv6/pub", checkHTTP(pub6, tc.expPubResp))
-				t.Run("ipv4/unpub", checkHTTP(unpub4, tc.expUnpubResp))
-				t.Run("ipv6/unpub", checkHTTP(unpub6, tc.expUnpubResp))
+				t.Run("ipv4/pub", checkHTTP(pub4.String(), tc.expPubResp))
+				t.Run("ipv6/pub", checkHTTP(pub6.String(), tc.expPubResp))
+				t.Run("ipv4/unpub", checkHTTP(unpub4.String(), tc.expUnpubResp))
+				t.Run("ipv6/unpub", checkHTTP(unpub6.String(), tc.expUnpubResp))
 			})
 		})
 	}
@@ -783,7 +783,7 @@ func TestDefaultBridgeIPv6(t *testing.T) {
 				container.WithImage("busybox:latest"),
 				container.WithCmd("top"),
 			)
-			defer c.ContainerRemove(ctx, cID, containertypes.RemoveOptions{
+			defer c.ContainerRemove(ctx, cID, client.ContainerRemoveOptions{
 				Force: true,
 			})
 
@@ -795,9 +795,9 @@ func TestDefaultBridgeIPv6(t *testing.T) {
 			defer cancel()
 			res := container.RunAttach(attachCtx, t, c,
 				container.WithImage("busybox:latest"),
-				container.WithCmd("ping", "-c1", "-W3", gIPv6),
+				container.WithCmd("ping", "-c1", "-W3", gIPv6.String()),
 			)
-			defer c.ContainerRemove(ctx, res.ContainerID, containertypes.RemoveOptions{
+			defer c.ContainerRemove(ctx, res.ContainerID, client.ContainerRemoveOptions{
 				Force: true,
 			})
 
@@ -887,7 +887,7 @@ func TestDefaultBridgeAddresses(t *testing.T) {
 
 				// Start a container, so that the bridge is set "up" and gets a kernel_ll address.
 				cID := container.Run(ctx, t, c)
-				defer c.ContainerRemove(ctx, cID, containertypes.RemoveOptions{Force: true})
+				defer c.ContainerRemove(ctx, cID, client.ContainerRemoveOptions{Force: true})
 
 				d.Stop(t)
 
@@ -940,7 +940,7 @@ func TestInternalNwConnectivity(t *testing.T) {
 		container.WithCmd("top"),
 		container.WithNetworkMode(bridgeName),
 	)
-	defer c.ContainerRemove(ctx, id, containertypes.RemoveOptions{Force: true})
+	defer c.ContainerRemove(ctx, id, client.ContainerRemoveOptions{Force: true})
 	networking.FirewalldReload(t, d)
 
 	execCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
@@ -1011,7 +1011,7 @@ func TestDisableIPv6Addrs(t *testing.T) {
 
 			runRes := container.RunAttach(ctx, t, c, opts...)
 			defer c.ContainerRemove(ctx, runRes.ContainerID,
-				containertypes.RemoveOptions{Force: true},
+				client.ContainerRemoveOptions{Force: true},
 			)
 
 			stdout := runRes.Stdout.String()
@@ -1021,6 +1021,81 @@ func TestDisableIPv6Addrs(t *testing.T) {
 			} else {
 				assert.Check(t, is.DeepEqual(inet6, []string{}, cmpopts.EquateEmpty()))
 			}
+		})
+	}
+}
+
+// TestDisableIPv6OnInterface checks that it's possible to disable IPv6 on an
+// endpoint in an IPv6 network using a sysctl.
+func TestDisableIPv6OnInterface(t *testing.T) {
+	ctx := setupTest(t)
+	d := daemon.New(t)
+	d.StartWithBusybox(ctx, t, "--ipv6")
+	defer d.Stop(t)
+
+	c := d.NewClientT(t)
+	defer c.Close()
+
+	tests := []struct {
+		name    string
+		netName string
+	}{
+		{
+			name:    "default bridge",
+			netName: "bridge",
+		},
+		{
+			name:    "user defined bridge",
+			netName: "testnet",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.netName, func(t *testing.T) {
+			if tc.netName != "bridge" {
+				network.CreateNoError(ctx, t, c, tc.netName, network.WithIPv6())
+				defer network.RemoveNoError(ctx, t, c, tc.netName)
+			}
+
+			const ctrName = "ctr"
+			ctrId := container.Run(ctx, t, c,
+				container.WithName(ctrName),
+				container.WithNetworkMode(tc.netName),
+				container.WithExposedPorts("80/tcp"),
+				container.WithPortMap(networktypes.PortMap{networktypes.MustParsePort("80/tcp"): {{HostPort: "8080"}}}),
+				container.WithEndpointSettings(tc.netName, &networktypes.EndpointSettings{
+					DriverOpts: map[string]string{
+						netlabel.EndpointSysctls: "net.ipv6.conf.IFNAME.disable_ipv6=1",
+					},
+				}),
+			)
+			defer c.ContainerRemove(ctx, ctrId, client.ContainerRemoveOptions{Force: true})
+
+			// The interface should not have any IPv6 addresses.
+			execRes := container.ExecT(ctx, t, c, ctrId, []string{"ip", "a", "show", "eth0"})
+			assert.Check(t, !strings.Contains(execRes.Stdout(), "inet6"),
+				"Unexpected IPv6 address in: %s", execRes.Stdout())
+
+			// Inspect should not show an IPv6 container address.
+			inspRes2 := container.Inspect(ctx, t, c, ctrId)
+			assert.Check(t, is.Equal(netip.Addr{}, inspRes2.NetworkSettings.Networks[tc.netName].GlobalIPv6Address))
+			assert.Check(t, is.Equal(0, inspRes2.NetworkSettings.Networks[tc.netName].GlobalIPv6PrefixLen))
+
+			// Port mappings should be IPv4-only - but can't see the proxy processes in the rootless netns.
+			if !testEnv.IsRootless() {
+				checkProxies(ctx, t, c, d.Pid(), []expProxyCfg{
+					{"tcp", "0.0.0.0", "8080", ctrName, tc.netName, true, "80"},
+					{"tcp", "::", "8080", ctrName, tc.netName, true, "80"},
+				})
+			}
+
+			// There should not be an IPv6 DNS or /etc/hosts entry.
+			runRes := container.RunAttach(ctx, t, c,
+				container.WithNetworkMode(tc.netName),
+				container.WithCmd("ping", "-6", ctrName),
+			)
+			assert.Check(t, is.Equal(runRes.ExitCode, 1))
+			assert.Check(t, is.Contains(runRes.Stderr.String(), "bad address"))
 		})
 	}
 }
@@ -1061,7 +1136,7 @@ func TestDisableIPv4(t *testing.T) {
 			defer network.RemoveNoError(ctx, t, c, netName)
 
 			id := container.Run(ctx, t, c, container.WithNetworkMode(netName))
-			defer c.ContainerRemove(ctx, id, containertypes.RemoveOptions{Force: true})
+			defer c.ContainerRemove(ctx, id, client.ContainerRemoveOptions{Force: true})
 
 			loRes := container.ExecT(ctx, t, c, id, []string{"ip", "a", "show", "dev", "lo"})
 			assert.Check(t, is.Contains(loRes.Combined(), " inet ")) // 127.0.0.1
@@ -1096,7 +1171,7 @@ func TestNonIPv6Network(t *testing.T) {
 	defer network.RemoveNoError(ctx, t, c, netName)
 
 	id := container.Run(ctx, t, c, container.WithNetworkMode(netName))
-	defer c.ContainerRemove(ctx, id, containertypes.RemoveOptions{Force: true})
+	defer c.ContainerRemove(ctx, id, client.ContainerRemoveOptions{Force: true})
 
 	loRes := container.ExecT(ctx, t, c, id, []string{"ip", "a", "show", "dev", "lo"})
 	assert.Check(t, is.Contains(loRes.Combined(), " inet "))
@@ -1165,7 +1240,7 @@ func TestNoIP6Tables(t *testing.T) {
 			defer network.RemoveNoError(ctx, t, c, netName)
 
 			id := container.Run(ctx, t, c, container.WithNetworkMode(netName))
-			defer c.ContainerRemove(ctx, id, containertypes.RemoveOptions{Force: true})
+			defer c.ContainerRemove(ctx, id, client.ContainerRemoveOptions{Force: true})
 
 			if tc.reloadFirewalld {
 				networking.FirewalldReload(t, d)
@@ -1213,7 +1288,7 @@ func TestSetInterfaceSysctl(t *testing.T) {
 
 	runRes := container.RunAttach(ctx, t, c, opts...)
 	defer c.ContainerRemove(ctx, runRes.ContainerID,
-		containertypes.RemoveOptions{Force: true},
+		client.ContainerRemoveOptions{Force: true},
 	)
 
 	stdout := runRes.Stdout.String()
@@ -1260,8 +1335,8 @@ func TestReadOnlySlashProc(t *testing.T) {
 				container.WithNetworkMode(net4Name),
 				container.WithCmd("ls"),
 			)
-			defer c.ContainerRemove(ctx, id4, containertypes.RemoveOptions{Force: true})
-			err := c.ContainerStart(ctx, id4, containertypes.StartOptions{})
+			defer c.ContainerRemove(ctx, id4, client.ContainerRemoveOptions{Force: true})
+			_, err := c.ContainerStart(ctx, id4, client.ContainerStartOptions{})
 			if tc.expErr == "" {
 				assert.Check(t, err)
 			} else {
@@ -1280,7 +1355,7 @@ func TestReadOnlySlashProc(t *testing.T) {
 				container.WithNetworkMode(net6Name),
 				container.WithCmd("ls"),
 			)
-			defer c.ContainerRemove(ctx, id6, containertypes.RemoveOptions{Force: true})
+			defer c.ContainerRemove(ctx, id6, client.ContainerRemoveOptions{Force: true})
 		})
 	}
 }
@@ -1309,7 +1384,7 @@ func TestSetEndpointSysctl(t *testing.T) {
 						},
 					}),
 				)
-				defer c.ContainerRemove(ctx, runRes.ContainerID, containertypes.RemoveOptions{Force: true})
+				defer c.ContainerRemove(ctx, runRes.ContainerID, client.ContainerRemoveOptions{Force: true})
 
 				stdout := runRes.Stdout.String()
 				assert.Check(t, is.Equal(strings.TrimSpace(stdout), val))
@@ -1334,11 +1409,12 @@ func TestContainerDisabledIPv6(t *testing.T) {
 	defer c.Close()
 
 	const netName = "ipv6br"
+	subnet6 := netip.MustParsePrefix("fd64:40cd:7fb4:8971::/64")
 	network.CreateNoError(ctx, t, c, netName,
 		network.WithDriver("bridge"),
 		network.WithOption(bridge.BridgeName, netName),
 		network.WithIPv6(),
-		network.WithIPAM("fd64:40cd:7fb4:8971::/64", "fd64:40cd:7fb4:8971::1"),
+		network.WithIPAM(subnet6.String(), "fd64:40cd:7fb4:8971::1"),
 	)
 	defer network.RemoveNoError(ctx, t, c, netName)
 
@@ -1346,10 +1422,10 @@ func TestContainerDisabledIPv6(t *testing.T) {
 	ctrWith6 := container.Run(ctx, t, c,
 		container.WithNetworkMode(netName),
 	)
-	defer c.ContainerRemove(ctx, ctrWith6, containertypes.RemoveOptions{Force: true})
+	defer c.ContainerRemove(ctx, ctrWith6, client.ContainerRemoveOptions{Force: true})
 	inspect := container.Inspect(ctx, t, c, ctrWith6)
 	addr := inspect.NetworkSettings.Networks[netName].GlobalIPv6Address
-	assert.Check(t, is.Contains(addr, "fd64:40cd:7fb4:8971"))
+	assert.Check(t, subnet6.Contains(addr))
 
 	// Run a container with IPv6 disabled.
 	const ctrNo6Name = "ctrNo6"
@@ -1358,10 +1434,10 @@ func TestContainerDisabledIPv6(t *testing.T) {
 		container.WithNetworkMode(netName),
 		container.WithSysctls(map[string]string{"net.ipv6.conf.all.disable_ipv6": "1"}),
 	)
-	defer c.ContainerRemove(ctx, ctrNo6, containertypes.RemoveOptions{Force: true})
+	defer c.ContainerRemove(ctx, ctrNo6, client.ContainerRemoveOptions{Force: true})
 	inspect = container.Inspect(ctx, t, c, ctrNo6)
 	addr = inspect.NetworkSettings.Networks[netName].GlobalIPv6Address
-	assert.Check(t, is.Equal(addr, ""))
+	assert.Check(t, !addr.IsValid())
 
 	execCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
@@ -1428,10 +1504,10 @@ func TestGatewaySelection(t *testing.T) {
 		container.WithName(ctrName),
 		container.WithNetworkMode(netName4),
 		container.WithExposedPorts("80"),
-		container.WithPortMap(containertypes.PortMap{"80": {{HostPort: "8080"}}}),
+		container.WithPortMap(networktypes.PortMap{networktypes.MustParsePort("80"): {{HostPort: "8080"}}}),
 		container.WithCmd("httpd", "-f"),
 	)
-	defer c.ContainerRemove(ctx, ctrId, containertypes.RemoveOptions{Force: true})
+	defer c.ContainerRemove(ctx, ctrId, client.ContainerRemoveOptions{Force: true})
 
 	// The container only has an IPv4 endpoint, it should be the gateway, and
 	// the host-IPv6 should be proxied to container-IPv4.
@@ -1443,7 +1519,9 @@ func TestGatewaySelection(t *testing.T) {
 	// Connect the IPv6-only network. The IPv6 endpoint should become the
 	// gateway for IPv6, the IPv4 endpoint should be reconfigured as the
 	// gateway for IPv4 only.
-	err := c.NetworkConnect(ctx, netId6, ctrId, nil)
+	_, err := c.NetworkConnect(ctx, netId6, client.NetworkConnectOptions{
+		Container: ctrId,
+	})
 	assert.NilError(t, err)
 	checkProxies(ctx, t, c, d.Pid(), []expProxyCfg{
 		{"tcp", "0.0.0.0", "8080", ctrName, netName4, true, "80"},
@@ -1452,7 +1530,7 @@ func TestGatewaySelection(t *testing.T) {
 
 	// Disconnect the IPv6-only network, the IPv4 should get back the mapping
 	// from host-IPv6.
-	err = c.NetworkDisconnect(ctx, netId6, ctrId, false)
+	_, err = c.NetworkDisconnect(ctx, netId6, client.NetworkDisconnectOptions{Container: ctrId, Force: false})
 	assert.NilError(t, err)
 	checkProxies(ctx, t, c, d.Pid(), []expProxyCfg{
 		{"tcp", "0.0.0.0", "8080", ctrName, netName4, true, "80"},
@@ -1460,7 +1538,9 @@ func TestGatewaySelection(t *testing.T) {
 	})
 
 	// Connect the dual-stack network, it should become the gateway for v6 and v4.
-	err = c.NetworkConnect(ctx, netId46, ctrId, nil)
+	_, err = c.NetworkConnect(ctx, netId46, client.NetworkConnectOptions{
+		Container: ctrId,
+	})
 	assert.NilError(t, err)
 	checkProxies(ctx, t, c, d.Pid(), []expProxyCfg{
 		{"tcp", "0.0.0.0", "8080", ctrName, netName46, true, "80"},
@@ -1468,7 +1548,7 @@ func TestGatewaySelection(t *testing.T) {
 	})
 
 	// Go back to the IPv4-only gateway, with proxy from host IPv6.
-	err = c.NetworkDisconnect(ctx, netId46, ctrId, false)
+	_, err = c.NetworkDisconnect(ctx, netId46, client.NetworkDisconnectOptions{Container: ctrId, Force: false})
 	assert.NilError(t, err)
 	checkProxies(ctx, t, c, d.Pid(), []expProxyCfg{
 		{"tcp", "0.0.0.0", "8080", ctrName, netName4, true, "80"},
@@ -1477,7 +1557,9 @@ func TestGatewaySelection(t *testing.T) {
 
 	// Connect the IPv6-only ipvlan network, its new Endpoint should become the IPv6
 	// gateway, so the IPv4-only bridge is expected to drop its mapping from host IPv6.
-	err = c.NetworkConnect(ctx, netIdIpvlan6, ctrId, nil)
+	_, err = c.NetworkConnect(ctx, netIdIpvlan6, client.NetworkConnectOptions{
+		Container: ctrId,
+	})
 	assert.NilError(t, err)
 	checkProxies(ctx, t, c, d.Pid(), []expProxyCfg{
 		{"tcp", "0.0.0.0", "8080", ctrName, netName4, true, "80"},
@@ -1498,13 +1580,16 @@ func checkProxies(ctx context.Context, t *testing.T, c *client.Client, daemonPid
 		if e.ctrIPv4 {
 			ctrIP = nw.IPAddress
 		}
-		wantProxies = append(wantProxies, makeExpStr(e.proto, e.hostIP, e.hostPort, ctrIP, e.ctrPort))
+		wantProxies = append(wantProxies, makeExpStr(e.proto, e.hostIP, e.hostPort, ctrIP.String(), e.ctrPort))
 	}
 
 	gotProxies := make([]string, 0, len(exp))
-	res, err := exec.Command("ps", "-f", "--ppid", strconv.Itoa(daemonPid)).CombinedOutput()
-	assert.NilError(t, err)
-	for _, line := range strings.Split(string(res), "\n") {
+	res := icmd.RunCommand("ps", "-f", "--ppid", strconv.Itoa(daemonPid))
+	if res.Error != nil {
+		t.Error(res)
+		return
+	}
+	for _, line := range strings.Split(res.Stdout(), "\n") {
 		_, args, ok := strings.Cut(line, "docker-proxy")
 		if !ok {
 			continue
@@ -1522,7 +1607,7 @@ func checkProxies(ctx context.Context, t *testing.T, c *client.Client, daemonPid
 		gotProxies = append(gotProxies, makeExpStr(proto, hostIP, hostPort, ctrIP, ctrPort))
 	}
 
-	assert.DeepEqual(t, gotProxies, wantProxies)
+	assert.Check(t, is.DeepEqual(gotProxies, wantProxies))
 }
 
 // Check that a gratuitous ARP / neighbour advertisement is sent for a new
@@ -1543,7 +1628,7 @@ func TestAdvertiseAddresses(t *testing.T) {
 
 	testcases := []struct {
 		name            string
-		netOpts         []func(*networktypes.CreateOptions)
+		netOpts         []func(*client.NetworkCreateOptions)
 		ipv6LinkLocal   bool
 		stopCtr2After   time.Duration
 		expNetCreateErr string
@@ -1558,21 +1643,21 @@ func TestAdvertiseAddresses(t *testing.T) {
 		},
 		{
 			name: "disable advertise addrs",
-			netOpts: []func(*networktypes.CreateOptions){
+			netOpts: []func(*client.NetworkCreateOptions){
 				network.WithOption(netlabel.AdvertiseAddrNMsgs, "0"),
 			},
 			expNoMACUpdate: true,
 		},
 		{
 			name: "single message",
-			netOpts: []func(*networktypes.CreateOptions){
+			netOpts: []func(*client.NetworkCreateOptions){
 				network.WithOption(netlabel.AdvertiseAddrNMsgs, "1"),
 			},
 			expNMsgs: 1,
 		},
 		{
 			name: "min interval",
-			netOpts: []func(*networktypes.CreateOptions){
+			netOpts: []func(*client.NetworkCreateOptions){
 				network.WithOption(netlabel.AdvertiseAddrIntervalMs, "100"),
 			},
 			expNMsgs:    3,
@@ -1580,7 +1665,7 @@ func TestAdvertiseAddresses(t *testing.T) {
 		},
 		{
 			name: "cancel",
-			netOpts: []func(*networktypes.CreateOptions){
+			netOpts: []func(*client.NetworkCreateOptions){
 				network.WithOption(netlabel.AdvertiseAddrIntervalMs, "2000"),
 			},
 			stopCtr2After: 200 * time.Millisecond,
@@ -1594,42 +1679,42 @@ func TestAdvertiseAddresses(t *testing.T) {
 		},
 		{
 			name: "interval too short",
-			netOpts: []func(*networktypes.CreateOptions){
+			netOpts: []func(*client.NetworkCreateOptions){
 				network.WithOption(netlabel.AdvertiseAddrIntervalMs, "99"),
 			},
 			expNetCreateErr: "Error response from daemon: com.docker.network.advertise_addr_ms must be in the range 100 to 2000",
 		},
 		{
 			name: "interval too long",
-			netOpts: []func(*networktypes.CreateOptions){
+			netOpts: []func(*client.NetworkCreateOptions){
 				network.WithOption(netlabel.AdvertiseAddrIntervalMs, "2001"),
 			},
 			expNetCreateErr: "Error response from daemon: com.docker.network.advertise_addr_ms must be in the range 100 to 2000",
 		},
 		{
 			name: "nonsense interval",
-			netOpts: []func(*networktypes.CreateOptions){
+			netOpts: []func(*client.NetworkCreateOptions){
 				network.WithOption(netlabel.AdvertiseAddrIntervalMs, "nonsense"),
 			},
 			expNetCreateErr: `Error response from daemon: value for option com.docker.network.advertise_addr_ms "nonsense" must be integer milliseconds`,
 		},
 		{
 			name: "negative msg count",
-			netOpts: []func(*networktypes.CreateOptions){
+			netOpts: []func(*client.NetworkCreateOptions){
 				network.WithOption(netlabel.AdvertiseAddrNMsgs, "-1"),
 			},
 			expNetCreateErr: "Error response from daemon: com.docker.network.advertise_addr_nmsgs must be in the range 0 to 3",
 		},
 		{
 			name: "too many msgs",
-			netOpts: []func(*networktypes.CreateOptions){
+			netOpts: []func(*client.NetworkCreateOptions){
 				network.WithOption(netlabel.AdvertiseAddrNMsgs, "4"),
 			},
 			expNetCreateErr: "Error response from daemon: com.docker.network.advertise_addr_nmsgs must be in the range 0 to 3",
 		},
 		{
 			name: "nonsense msg count",
-			netOpts: []func(*networktypes.CreateOptions){
+			netOpts: []func(*client.NetworkCreateOptions){
 				network.WithOption(netlabel.AdvertiseAddrNMsgs, "nonsense"),
 			},
 			expNetCreateErr: `Error response from daemon: value for option com.docker.network.advertise_addr_nmsgs "nonsense" must be an integer`,
@@ -1642,7 +1727,7 @@ func TestAdvertiseAddresses(t *testing.T) {
 
 			const netName = "dsnet"
 			const brName = "br-advaddr"
-			netOpts := append([]func(*networktypes.CreateOptions){
+			netOpts := append([]func(*client.NetworkCreateOptions){
 				network.WithOption(bridge.BridgeName, brName),
 				network.WithIPv6(),
 				network.WithIPAM("172.22.22.0/24", "172.22.22.1"),
@@ -1665,7 +1750,7 @@ func TestAdvertiseAddresses(t *testing.T) {
 			defer stopICMP6Listen()
 
 			ctr1Id := container.Run(ctx, t, c, container.WithName("ctr1"), container.WithNetworkMode(netName))
-			defer c.ContainerRemove(ctx, ctr1Id, containertypes.RemoveOptions{Force: true})
+			defer c.ContainerRemove(ctx, ctr1Id, client.ContainerRemoveOptions{Force: true})
 
 			const ctr2Name = "ctr2"
 			const ctr2Addr4 = "172.22.22.22"
@@ -1682,7 +1767,7 @@ func TestAdvertiseAddresses(t *testing.T) {
 			// Defer a closure so the updated ctr2Id is used after the container's restarted.
 			defer func() {
 				if ctr2Id != "" {
-					c.ContainerRemove(ctx, ctr2Id, containertypes.RemoveOptions{Force: true})
+					c.ContainerRemove(ctx, ctr2Id, client.ContainerRemoveOptions{Force: true})
 				}
 			}()
 
@@ -1718,7 +1803,7 @@ func TestAdvertiseAddresses(t *testing.T) {
 			assert.Equal(t, macBefore, findNeighMAC(ctr1Neighs.Stdout(), ctr2Addr6))
 
 			// Stop ctr2, start a new container with the same addresses.
-			c.ContainerRemove(ctx, ctr2Id, containertypes.RemoveOptions{Force: true})
+			c.ContainerRemove(ctx, ctr2Id, client.ContainerRemoveOptions{Force: true})
 			ctr1Neighs = container.ExecT(ctx, t, c, ctr1Id, []string{"ip", "neigh", "show"})
 			assert.Assert(t, is.Equal(ctr1Neighs.ExitCode, 0))
 			t.Logf("ctr1 neighbours after ctr2 stop:\n%s", ctr1Neighs.Combined())
@@ -1731,7 +1816,7 @@ func TestAdvertiseAddresses(t *testing.T) {
 			// The original defer will stop ctr2Id.
 
 			ctr2NewMAC := container.Inspect(ctx, t, c, ctr2Id).NetworkSettings.Networks[netName].MacAddress
-			assert.Check(t, ctr2OrigMAC != ctr2NewMAC, "expected restarted ctr2 to have a different MAC address")
+			assert.Check(t, !slices.Equal(ctr2OrigMAC, ctr2NewMAC), "expected restarted ctr2 to have a different MAC address")
 
 			ctr1Neighs = container.ExecT(ctx, t, c, ctr1Id, []string{"ip", "neigh", "show"})
 			assert.Assert(t, is.Equal(ctr1Neighs.ExitCode, 0))
@@ -1749,7 +1834,7 @@ func TestAdvertiseAddresses(t *testing.T) {
 
 			if tc.stopCtr2After > 0 {
 				time.Sleep(tc.stopCtr2After)
-				c.ContainerRemove(ctx, ctr2Id, containertypes.RemoveOptions{Force: true})
+				c.ContainerRemove(ctx, ctr2Id, client.ContainerRemoveOptions{Force: true})
 				ctr2Id = ""
 			}
 
@@ -1757,9 +1842,6 @@ func TestAdvertiseAddresses(t *testing.T) {
 			time.Sleep(5 * time.Second)
 
 			// Check ARP/NA messages received for ctr2's new address (all unsolicited).
-
-			ctr2NewHwAddr, err := net.ParseMAC(ctr2NewMAC)
-			assert.NilError(t, err)
 
 			checkPkts := func(pktDesc string, pkts []network.TimestampedPkt, matchIP netip.Addr, unpack func(pkt network.TimestampedPkt) (sh net.HardwareAddr, sp netip.Addr, err error)) {
 				t.Helper()
@@ -1775,7 +1857,7 @@ func TestAdvertiseAddresses(t *testing.T) {
 						continue
 					}
 					t.Logf("%s %d: %s '%s' is at '%s'", pktDesc, i+1, p.ReceivedAt.Format("15:04:05.000"), pa, ha)
-					if pa != matchIP || slices.Compare(ha, ctr2NewHwAddr) != 0 {
+					if pa != matchIP || slices.Compare(ha, net.HardwareAddr(ctr2NewMAC)) != 0 {
 						continue
 					}
 					count++
@@ -1821,11 +1903,10 @@ func TestNetworkInspectGateway(t *testing.T) {
 	assert.NilError(t, err)
 	defer network.RemoveNoError(ctx, t, c, netName)
 
-	insp, err := c.NetworkInspect(ctx, nid, networktypes.InspectOptions{})
+	res, err := c.NetworkInspect(ctx, nid, client.NetworkInspectOptions{})
 	assert.NilError(t, err)
-	for _, ipamCfg := range insp.IPAM.Config {
-		_, err := netip.ParseAddr(ipamCfg.Gateway)
-		assert.Check(t, err)
+	for _, ipamCfg := range res.Network.IPAM.Config {
+		assert.Check(t, ipamCfg.Gateway.IsValid())
 	}
 }
 
@@ -1877,10 +1958,10 @@ func TestDropInForwardChain(t *testing.T) {
 		ctrId := container.Run(ctx, t, c,
 			container.WithNetworkMode(netName46),
 			container.WithExposedPorts("80"),
-			container.WithPortMap(containertypes.PortMap{"80": {{HostPort: hostPort}}}),
+			container.WithPortMap(networktypes.PortMap{networktypes.MustParsePort("80"): {{HostPort: hostPort}}}),
 			container.WithCmd("httpd", "-f"),
 		)
-		defer c.ContainerRemove(ctx, ctrId, containertypes.RemoveOptions{Force: true})
+		defer c.ContainerRemove(ctx, ctrId, client.ContainerRemoveOptions{Force: true})
 
 		// Make an HTTP request from a new container, via the published port on the host addresses.
 		// Expect a "404", not a timeout due to packets dropped by the FORWARD chain's extra rule.
@@ -1922,7 +2003,7 @@ func TestLegacyLinksEnvVars(t *testing.T) {
 			ctr1 := container.Run(ctx, t, c,
 				container.WithName("ctr1"),
 				container.WithCmd("httpd", "-f"))
-			defer c.ContainerRemove(ctx, ctr1, containertypes.RemoveOptions{Force: true})
+			defer c.ContainerRemove(ctx, ctr1, client.ContainerRemoveOptions{Force: true})
 
 			exportRes := container.RunAttach(ctx, t, c,
 				container.WithName("ctr2"),

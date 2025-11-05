@@ -1,65 +1,16 @@
 package registry
 
 import (
-	"encoding/json"
-	"net"
+	"net/netip"
 
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
 // ServiceConfig stores daemon registry services configuration.
 type ServiceConfig struct {
-	InsecureRegistryCIDRs []*NetIPNet           `json:"InsecureRegistryCIDRs"`
+	InsecureRegistryCIDRs []netip.Prefix        `json:"InsecureRegistryCIDRs"`
 	IndexConfigs          map[string]*IndexInfo `json:"IndexConfigs"`
 	Mirrors               []string
-
-	// ExtraFields is for internal use to include deprecated fields on older API versions.
-	ExtraFields map[string]any `json:"-"`
-}
-
-// MarshalJSON implements a custom marshaler to include legacy fields
-// in API responses.
-func (sc *ServiceConfig) MarshalJSON() ([]byte, error) {
-	type tmp ServiceConfig
-	base, err := json.Marshal((*tmp)(sc))
-	if err != nil {
-		return nil, err
-	}
-	var merged map[string]any
-	_ = json.Unmarshal(base, &merged)
-
-	for k, v := range sc.ExtraFields {
-		merged[k] = v
-	}
-	return json.Marshal(merged)
-}
-
-// NetIPNet is the net.IPNet type, which can be marshalled and
-// unmarshalled to JSON
-type NetIPNet net.IPNet
-
-// String returns the CIDR notation of ipnet
-func (ipnet *NetIPNet) String() string {
-	return (*net.IPNet)(ipnet).String()
-}
-
-// MarshalJSON returns the JSON representation of the IPNet
-func (ipnet *NetIPNet) MarshalJSON() ([]byte, error) {
-	return json.Marshal((*net.IPNet)(ipnet).String())
-}
-
-// UnmarshalJSON sets the IPNet from a byte array of JSON
-func (ipnet *NetIPNet) UnmarshalJSON(b []byte) error {
-	var ipnetStr string
-	if err := json.Unmarshal(b, &ipnetStr); err != nil {
-		return err
-	}
-	_, cidr, err := net.ParseCIDR(ipnetStr)
-	if err != nil {
-		return err
-	}
-	*ipnet = NetIPNet(*cidr)
-	return nil
 }
 
 // IndexInfo contains information about a registry

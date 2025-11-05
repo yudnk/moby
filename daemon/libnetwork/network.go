@@ -9,17 +9,18 @@ import (
 	"net"
 	"net/netip"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/containerd/log"
-	"github.com/moby/moby/v2/daemon/internal/sliceutil"
+	"github.com/moby/moby/api/types/network"
+	"github.com/moby/moby/v2/daemon/internal/netiputil"
 	"github.com/moby/moby/v2/daemon/internal/stringid"
 	"github.com/moby/moby/v2/daemon/libnetwork/datastore"
 	"github.com/moby/moby/v2/daemon/libnetwork/driverapi"
-	"github.com/moby/moby/v2/daemon/libnetwork/internal/netiputil"
 	"github.com/moby/moby/v2/daemon/libnetwork/internal/setmatrix"
 	"github.com/moby/moby/v2/daemon/libnetwork/ipamapi"
 	"github.com/moby/moby/v2/daemon/libnetwork/ipams/defaultipam"
@@ -30,6 +31,8 @@ import (
 	"github.com/moby/moby/v2/daemon/libnetwork/scope"
 	"github.com/moby/moby/v2/daemon/libnetwork/types"
 	"github.com/moby/moby/v2/errdefs"
+	"github.com/moby/moby/v2/internal/iterutil"
+	"github.com/moby/moby/v2/internal/sliceutil"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -105,7 +108,7 @@ func (c *IpamConf) Validate() error {
 }
 
 // Contains checks whether the ipam master address pool contains [addr].
-func (c *IpamConf) Contains(addr net.IP) bool {
+func (c *IpamConf) Contains(addr netip.Addr) bool {
 	if c == nil {
 		return false
 	}
@@ -113,7 +116,7 @@ func (c *IpamConf) Contains(addr net.IP) bool {
 		return false
 	}
 
-	_, allowedRange, _ := net.ParseCIDR(c.PreferredPool)
+	allowedRange, _ := netiputil.ParseCIDR(c.PreferredPool)
 
 	return allowedRange.Contains(addr)
 }
@@ -121,6 +124,30 @@ func (c *IpamConf) Contains(addr net.IP) bool {
 // IsStatic checks whether the subnet was statically allocated (ie. user-defined).
 func (c *IpamConf) IsStatic() bool {
 	return c != nil && c.PreferredPool != ""
+}
+
+func (c *IpamConf) IPAMConfig() network.IPAMConfig {
+	if c == nil {
+		return network.IPAMConfig{}
+	}
+
+	subnet, _ := netiputil.ParseCIDR(c.PreferredPool)
+	ipr, _ := netiputil.ParseCIDR(c.SubPool)
+	gw, _ := netip.ParseAddr(c.Gateway)
+
+	conf := network.IPAMConfig{
+		Subnet:  subnet.Masked(),
+		IPRange: ipr.Masked(),
+		Gateway: gw.Unmap(),
+	}
+
+	if c.AuxAddresses != nil {
+		conf.AuxAddress = maps.Collect(iterutil.Map2(maps.All(c.AuxAddresses), func(k, v string) (string, netip.Addr) {
+			a, _ := netip.ParseAddr(v)
+			return k, a.Unmap()
+		}))
+	}
+	return conf
 }
 
 // IpamInfo contains all the ipam related operational info for a network
@@ -247,6 +274,11 @@ func (n *Network) Type() string {
 	defer n.mu.Unlock()
 
 	return n.networkType
+}
+
+// Driver is an alias for [Network.Type].
+func (n *Network) Driver() string {
+	return n.Type()
 }
 
 func (n *Network) Resolvers() []*Resolver {
@@ -929,33 +961,8 @@ func NetworkDeleteOptionRemoveLB(p *networkDeleteParams) {
 	p.rmLBEndpoint = true
 }
 
-func (n *Network) resolveDriver(name string, load bool) (driverapi.Driver, driverapi.Capability, error) {
-	c := n.getController()
-
-	// Check if a driver for the specified network type is available
-	d, capabilities := c.drvRegistry.Driver(name)
-	if d == nil {
-		if load {
-			err := c.loadDriver(name)
-			if err != nil {
-				return nil, driverapi.Capability{}, err
-			}
-
-			d, capabilities = c.drvRegistry.Driver(name)
-			if d == nil {
-				return nil, driverapi.Capability{}, fmt.Errorf("could not resolve driver %s in registry", name)
-			}
-		} else {
-			// don't fail if driver loading is not required
-			return nil, driverapi.Capability{}, nil
-		}
-	}
-
-	return d, capabilities, nil
-}
-
 func (n *Network) driverIsMultihost() bool {
-	_, capabilities, err := n.resolveDriver(n.networkType, true)
+	_, capabilities, err := n.getController().resolveDriver(n.networkType, true)
 	if err != nil {
 		return false
 	}
@@ -963,7 +970,7 @@ func (n *Network) driverIsMultihost() bool {
 }
 
 func (n *Network) driver(load bool) (driverapi.Driver, error) {
-	d, capabilities, err := n.resolveDriver(n.networkType, load)
+	d, capabilities, err := n.getController().resolveDriver(n.networkType, load)
 	if err != nil {
 		return nil, err
 	}
@@ -1101,18 +1108,17 @@ func (n *Network) delete(force bool, rmLBEndpoint bool) error {
 	}
 
 removeFromStore:
-	// deleteFromStore performs an atomic delete operation and the
-	// Network.epCnt will help prevent any possible
-	// race between endpoint join and network delete
-	//
 	// TODO(robmry) - remove this once downgrade past 28.1.0 is no longer supported.
 	// The endpoint count is no longer used, it's created in the store to make
 	// downgrade work, versions older than 28.1.0 expect to read it and error if they
-	// can't. The stored count is not maintained, so the downgraded version will
-	// always find it's zero (which is usually correct because the daemon had
-	// stopped), but older daemons fix it on startup anyway.
-	if err = c.deleteFromStore(&endpointCnt{n: n}); err != nil {
-		log.G(context.TODO()).Debugf("Error deleting endpoint count from store for stale network %s (%s) for deletion: %v", n.Name(), n.ID(), err)
+	// can't.
+	if err := c.store.DeleteObject(&endpointCnt{n: n}); err != nil {
+		if !errors.Is(err, datastore.ErrKeyNotFound) {
+			log.G(context.TODO()).WithFields(log.Fields{
+				"network": n.name,
+				"error":   err,
+			}).Debug("Error deleting network endpoint count from store")
+		}
 	}
 
 	if err = c.deleteStoredNetwork(n); err != nil {
@@ -1217,12 +1223,10 @@ func (n *Network) createEndpoint(ctx context.Context, name string, options ...En
 		return nil, err
 	}
 
+	ep.ipamOptions = map[string]string{netlabel.EndpointName: name}
 	if capability.RequiresMACAddress {
 		if ep.iface.mac == nil {
 			ep.iface.mac = netutils.GenerateRandomMAC()
-		}
-		if ep.ipamOptions == nil {
-			ep.ipamOptions = make(map[string]string)
 		}
 		ep.ipamOptions[netlabel.MacAddress] = ep.iface.mac.String()
 	}
@@ -1234,7 +1238,7 @@ func (n *Network) createEndpoint(ctx context.Context, name string, options ...En
 	}
 	defer func() {
 		if err != nil {
-			ep.releaseAddress()
+			ep.releaseIPAddresses()
 		}
 	}()
 
@@ -1262,15 +1266,6 @@ func (n *Network) createEndpoint(ctx context.Context, name string, options ...En
 		}
 	}()
 
-	if !n.getController().isSwarmNode() || n.Scope() != scope.Swarm || !n.driverIsMultihost() {
-		n.updateSvcRecord(context.WithoutCancel(ctx), ep, true)
-		defer func() {
-			if err != nil {
-				n.updateSvcRecord(context.WithoutCancel(ctx), ep, false)
-			}
-		}()
-	}
-
 	return ep, nil
 }
 
@@ -1281,6 +1276,11 @@ func (n *Network) Endpoints() []*Endpoint {
 		log.G(context.TODO()).Error(err)
 	}
 	return endpoints
+}
+
+// HasContainerAttachments returns true when len(n.Endpoints()) > 0.
+func (n *Network) HasContainerAttachments() bool {
+	return len(n.Endpoints()) > 0
 }
 
 // WalkEndpoints uses the provided function to walk the Endpoints.
@@ -1485,9 +1485,14 @@ func (n *Network) ipamAllocate() (retErr error) {
 	}
 
 	if n.enableIPv4 {
-		if err := n.ipamAllocateVersion(4, ipam); err != nil {
+		if len(n.ipamV4Config) == 0 {
+			n.ipamV4Config = []*IpamConf{{}}
+		}
+		info, err := n.ipamAllocateVersion(ipam, false, n.ipamV4Config, n.ipamV4Info, n.skipGwAllocIPv4)
+		if err != nil {
 			return err
 		}
+		n.ipamV4Info = info
 		defer func() {
 			if retErr != nil {
 				n.ipamReleaseVersion(4, ipam)
@@ -1496,123 +1501,140 @@ func (n *Network) ipamAllocate() (retErr error) {
 	}
 
 	if n.enableIPv6 {
-		if err := n.ipamAllocateVersion(6, ipam); err != nil {
+		if len(n.ipamV6Config) == 0 {
+			n.ipamV6Config = []*IpamConf{{}}
+		}
+		info, err := n.ipamAllocateVersion(ipam, true, n.ipamV6Config, n.ipamV6Info, n.skipGwAllocIPv6)
+		if err != nil {
 			return err
 		}
+		n.ipamV6Info = info
 	}
 
 	return nil
 }
 
-func (n *Network) ipamAllocateVersion(ipVer int, ipam ipamapi.Ipam) error {
-	var (
-		cfgList     *[]*IpamConf
-		infoList    *[]*IpamInfo
-		skipGwAlloc bool
-		err         error
-	)
+func (n *Network) ipamAllocateVersion(ipam ipamapi.Ipam, v6 bool, ipamConf []*IpamConf, ipamInfo []*IpamInfo, skipGwAlloc bool) (_ []*IpamInfo, retErr error) {
+	var newInfo []*IpamInfo
 
-	switch ipVer {
-	case 4:
-		cfgList = &n.ipamV4Config
-		infoList = &n.ipamV4Info
-		skipGwAlloc = n.skipGwAllocIPv4
-	case 6:
-		cfgList = &n.ipamV6Config
-		infoList = &n.ipamV6Info
-		skipGwAlloc = n.skipGwAllocIPv6
-	default:
-		return types.InternalErrorf("incorrect ip version passed to ipam allocate: %d", ipVer)
-	}
+	log.G(context.TODO()).WithFields(log.Fields{
+		"network": n.Name(),
+		"nid":     stringid.TruncateID(n.ID()),
+		"ipv6":    v6,
+	}).Debug("Allocating pools for network")
 
-	if len(*cfgList) == 0 {
-		*cfgList = []*IpamConf{{}}
-	}
-
-	*infoList = make([]*IpamInfo, len(*cfgList))
-
-	log.G(context.TODO()).Debugf("Allocating IPv%d pools for network %s (%s)", ipVer, n.Name(), n.ID())
-
-	for i, cfg := range *cfgList {
-		if err = cfg.Validate(); err != nil {
-			return err
+	for i, cfg := range ipamConf {
+		if err := cfg.Validate(); err != nil {
+			return nil, err
 		}
-		d := &IpamInfo{}
-		(*infoList)[i] = d
-
-		d.AddressSpace = n.addrSpace
 
 		var reserved []netip.Prefix
 		if n.Scope() != scope.Global {
-			reserved = netutils.InferReservedNetworks(ipVer == 6)
+			reserved = netutils.InferReservedNetworks(v6)
+		}
+
+		// Determine if the preferred pool is unspecified (blank, or a 0.0.0.0 or :: address)
+		prefPool := cfg.PreferredPool
+		isDefaultPool := prefPool == ""
+		if !isDefaultPool {
+			if prefix, err := netip.ParsePrefix(prefPool); err != nil {
+				// This should never happen
+				return nil, types.InvalidParameterErrorf("invalid preferred address %q: %v", prefPool, err)
+			} else if prefix.Addr().IsUnspecified() {
+				isDefaultPool = true
+			}
+		}
+
+		// During network restore, if no subnet was specified in the original network-create
+		// request, use the previously allocated subnet.
+		if isDefaultPool && len(ipamInfo) > i {
+			prefPool = ipamInfo[i].Pool.String()
 		}
 
 		alloc, err := ipam.RequestPool(ipamapi.PoolRequest{
 			AddressSpace: n.addrSpace,
-			Pool:         cfg.PreferredPool,
+			Pool:         prefPool,
 			SubPool:      cfg.SubPool,
 			Options:      n.ipamOptions,
 			Exclude:      reserved,
-			V6:           ipVer == 6,
+			V6:           v6,
 		})
 		if err != nil {
-			return err
+			return nil, err
 		}
-
-		d.PoolID = alloc.PoolID
-		d.Pool = netiputil.ToIPNet(alloc.Pool)
-		d.Meta = alloc.Meta
-
 		defer func() {
-			if err != nil {
-				if err := ipam.ReleasePool(d.PoolID); err != nil {
-					log.G(context.TODO()).Warnf("Failed to release address pool %s after failure to create network %s (%s)", d.PoolID, n.Name(), n.ID())
+			if retErr != nil {
+				if err := ipam.ReleasePool(alloc.PoolID); err != nil {
+					log.G(context.TODO()).WithFields(log.Fields{
+						"network": n.Name(),
+						"nid":     stringid.TruncateID(n.ID()),
+						"pool":    alloc.PoolID,
+						"retErr":  retErr,
+						"error":   err,
+					}).Warn("Failed to release address pool after failure to create network")
 				}
 			}
 		}()
 
+		d := &IpamInfo{
+			PoolID: alloc.PoolID,
+			Meta:   alloc.Meta,
+			IPAMData: driverapi.IPAMData{
+				Pool:         netiputil.ToIPNet(alloc.Pool),
+				AddressSpace: n.addrSpace,
+			},
+		}
+		newInfo = append(newInfo, d)
+
+		// During network restore, if the original network-create request did not specify a
+		// gateway, use the previously allocated gateway.
+		prefGateway := cfg.Gateway
+		if prefGateway == "" && len(ipamInfo) > i && ipamInfo[i].Gateway != nil {
+			prefGateway = ipamInfo[i].Gateway.IP.String()
+		}
+
 		// If there's no user-configured gateway address but the IPAM driver returned a gw when it
 		// set up the pool, use it. (It doesn't need to be requested/reserved in IPAM.)
-		if cfg.Gateway == "" {
+		if prefGateway == "" {
 			if gws, ok := d.Meta[netlabel.Gateway]; ok {
 				if d.Gateway, err = types.ParseCIDR(gws); err != nil {
-					return types.InvalidParameterErrorf("failed to parse gateway address (%v) returned by ipam driver: %v", gws, err)
+					return nil, types.InvalidParameterErrorf("failed to parse gateway address (%v) returned by ipam driver: %v", gws, err)
 				}
 			}
 		}
 
 		// If there's still no gateway, reserve cfg.Gateway if the user specified it. Else,
 		// if the driver wants a gateway, let the IPAM driver select an address.
-		if d.Gateway == nil && (cfg.Gateway != "" || !skipGwAlloc) {
+		if d.Gateway == nil && (prefGateway != "" || !skipGwAlloc) {
 			gatewayOpts := map[string]string{
 				ipamapi.RequestAddressType: netlabel.Gateway,
 			}
-			if d.Gateway, _, err = ipam.RequestAddress(d.PoolID, net.ParseIP(cfg.Gateway), gatewayOpts); err != nil {
-				return types.InternalErrorf("failed to allocate gateway (%v): %v", cfg.Gateway, err)
+			if d.Gateway, _, err = ipam.RequestAddress(d.PoolID, net.ParseIP(prefGateway), gatewayOpts); err != nil {
+				return nil, types.InternalErrorf("failed to allocate gateway (%v): %v", prefGateway, err)
 			}
 		}
 
-		// Auxiliary addresses must be part of the master address pool
-		// If they fall into the container addressable pool, libnetwork will reserve them
+		// Auxiliary addresses must be part of the master address pool.
+		// If they fall into the container addressable pool, reserve them.
 		if cfg.AuxAddresses != nil {
 			var ip net.IP
 			d.IPAMData.AuxAddresses = make(map[string]*net.IPNet, len(cfg.AuxAddresses))
 			for k, v := range cfg.AuxAddresses {
 				if ip = net.ParseIP(v); ip == nil {
-					return types.InvalidParameterErrorf("non parsable secondary ip address (%s:%s) passed for network %s", k, v, n.Name())
+					return nil, types.InvalidParameterErrorf("non parsable secondary ip address (%s:%s) passed for network %s", k, v, n.Name())
 				}
 				if !d.Pool.Contains(ip) {
-					return types.ForbiddenErrorf("auxiliary address: (%s:%s) must belong to the master pool: %s", k, v, d.Pool)
+					return nil, types.ForbiddenErrorf("auxiliary address: (%s:%s) must belong to the master pool: %s", k, v, d.Pool)
 				}
 				// Attempt reservation in the container addressable pool, silent the error if address does not belong to that pool
 				if d.IPAMData.AuxAddresses[k], _, err = ipam.RequestAddress(d.PoolID, ip, nil); err != nil && !errors.Is(err, ipamapi.ErrIPOutOfRange) {
-					return types.InternalErrorf("failed to allocate secondary ip address (%s:%s): %v", k, v, err)
+					return nil, types.InternalErrorf("failed to allocate secondary ip address (%s:%s): %v", k, v, err)
 				}
 			}
 		}
 	}
 
-	return nil
+	return newInfo, nil
 }
 
 func (n *Network) ipamRelease() {
@@ -2106,7 +2128,7 @@ func (n *Network) createLoadBalancerSandbox() (retErr error) {
 
 	endpointName := n.lbEndpointName()
 	epOptions := []EndpointOption{
-		CreateOptionIpam(n.loadBalancerIP, nil, nil, nil),
+		CreateOptionIPAM(n.loadBalancerIP, nil, nil),
 		CreateOptionLoadBalancer(),
 	}
 	ep, err := n.createEndpoint(context.TODO(), endpointName, epOptions...)
@@ -2162,4 +2184,38 @@ func (n *Network) deleteLoadBalancerSandbox() error {
 		return fmt.Errorf("Failed to delete %s sandbox: %v", sandboxName, err)
 	}
 	return nil
+}
+
+func (n *Network) IPAMStatus(ctx context.Context) (network.IPAMStatus, error) {
+	status := network.IPAMStatus{
+		Subnets: make(map[netip.Prefix]network.SubnetStatus),
+	}
+
+	if n.hasSpecialDriver() {
+		// Special drivers do not assign addresses from IPAM
+		return status, nil
+	}
+
+	ipamdriver, _, err := n.getController().getIPAMDriver(n.ipamType)
+	if err != nil {
+		return status, err
+	}
+	ipam, ok := ipamdriver.(ipamapi.PoolStatuser)
+	if !ok {
+		return status, nil
+	}
+
+	var errs []error
+	info4, info6 := n.IpamInfo()
+	for info := range iterutil.Chain(slices.Values(info4), slices.Values(info6)) {
+		pstat, err := ipam.PoolStatus(info.PoolID)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("failed to retrieve pool %s status: %w", info.PoolID, err))
+			continue
+		}
+		prefix, _ := netiputil.ToPrefix(info.Pool)
+		status.Subnets[prefix] = pstat
+	}
+
+	return status, errors.Join(errs...)
 }

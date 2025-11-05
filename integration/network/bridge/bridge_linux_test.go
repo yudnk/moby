@@ -3,23 +3,26 @@ package bridge
 import (
 	"context"
 	"fmt"
+	"math"
 	"net"
 	"net/netip"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/google/go-cmp/cmp/cmpopts"
 	containertypes "github.com/moby/moby/api/types/container"
 	networktypes "github.com/moby/moby/api/types/network"
-	"github.com/moby/moby/api/types/versions"
+	"github.com/moby/moby/client"
+	"github.com/moby/moby/v2/daemon/container"
 	"github.com/moby/moby/v2/daemon/libnetwork/drivers/bridge"
 	"github.com/moby/moby/v2/daemon/libnetwork/netlabel"
 	"github.com/moby/moby/v2/daemon/libnetwork/nlwrap"
 	ctr "github.com/moby/moby/v2/integration/internal/container"
 	"github.com/moby/moby/v2/integration/internal/network"
 	"github.com/moby/moby/v2/integration/internal/testutils/networking"
-	"github.com/moby/moby/v2/testutil"
-	"github.com/moby/moby/v2/testutil/daemon"
+	"github.com/moby/moby/v2/internal/testutil"
+	"github.com/moby/moby/v2/internal/testutil/daemon"
 	"github.com/vishvananda/netlink"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
@@ -28,8 +31,6 @@ import (
 )
 
 func TestCreateWithMultiNetworks(t *testing.T) {
-	skip.If(t, versions.LessThan(testEnv.DaemonAPIVersion(), "1.44"), "requires API v1.44")
-
 	ctx := setupTest(t)
 	apiClient := testEnv.APIClient()
 
@@ -64,12 +65,11 @@ func TestCreateWithIPv6DefaultsToULAPrefix(t *testing.T) {
 	network.CreateNoError(ctx, t, apiClient, nwName, network.WithIPv6())
 	defer network.RemoveNoError(ctx, t, apiClient, nwName)
 
-	nw, err := apiClient.NetworkInspect(ctx, "testnetula", networktypes.InspectOptions{})
+	res, err := apiClient.NetworkInspect(ctx, "testnetula", client.NetworkInspectOptions{})
 	assert.NilError(t, err)
 
-	for _, ipam := range nw.IPAM.Config {
-		ipr := netip.MustParsePrefix(ipam.Subnet)
-		if netip.MustParsePrefix("fd00::/8").Overlaps(ipr) {
+	for _, ipam := range res.Network.IPAM.Config {
+		if netip.MustParsePrefix("fd00::/8").Overlaps(ipam.Subnet) {
 			return
 		}
 	}
@@ -91,12 +91,11 @@ func TestCreateWithIPv6WithoutEnableIPv6Flag(t *testing.T) {
 	network.CreateNoError(ctx, t, apiClient, nwName)
 	defer network.RemoveNoError(ctx, t, apiClient, nwName)
 
-	nw, err := apiClient.NetworkInspect(ctx, "testnetula", networktypes.InspectOptions{})
+	res, err := apiClient.NetworkInspect(ctx, "testnetula", client.NetworkInspectOptions{})
 	assert.NilError(t, err)
 
-	for _, ipam := range nw.IPAM.Config {
-		ipr := netip.MustParsePrefix(ipam.Subnet)
-		if netip.MustParsePrefix("fd00::/8").Overlaps(ipr) {
+	for _, ipam := range res.Network.IPAM.Config {
+		if netip.MustParsePrefix("fd00::/8").Overlaps(ipam.Subnet) {
 			return
 		}
 	}
@@ -126,7 +125,7 @@ func TestDefaultIPvOptOverride(t *testing.T) {
 				t.Run(fmt.Sprintf("override4=%v,override6=%v", override4, override6), func(t *testing.T) {
 					t.Parallel()
 					netName := fmt.Sprintf("tdioo-%v-%v", override4, override6)
-					var nopts []func(*networktypes.CreateOptions)
+					var nopts []func(*client.NetworkCreateOptions)
 					if override4 {
 						nopts = append(nopts, network.WithIPv4(true))
 					}
@@ -136,20 +135,20 @@ func TestDefaultIPvOptOverride(t *testing.T) {
 					network.CreateNoError(ctx, t, c, netName, nopts...)
 					defer network.RemoveNoError(ctx, t, c, netName)
 
-					insp, err := c.NetworkInspect(ctx, netName, networktypes.InspectOptions{})
+					res, err := c.NetworkInspect(ctx, netName, client.NetworkInspectOptions{})
 					assert.NilError(t, err)
-					t.Log("override4", override4, "override6", override6, "->", insp.Options)
+					t.Log("override4", override4, "override6", override6, "->", res.Network.Options)
 
-					gotOpt4, have4 := insp.Options[netlabel.EnableIPv4]
+					gotOpt4, have4 := res.Network.Options[netlabel.EnableIPv4]
 					assert.Check(t, is.Equal(have4, !override4))
-					assert.Check(t, is.Equal(insp.EnableIPv4, override4))
+					assert.Check(t, is.Equal(res.Network.EnableIPv4, override4))
 					if have4 {
 						assert.Check(t, is.Equal(gotOpt4, opt4))
 					}
 
-					gotOpt6, have6 := insp.Options[netlabel.EnableIPv6]
+					gotOpt6, have6 := res.Network.Options[netlabel.EnableIPv6]
 					assert.Check(t, is.Equal(have6, !override6))
-					assert.Check(t, is.Equal(insp.EnableIPv6, true))
+					assert.Check(t, is.Equal(res.Network.EnableIPv6, true))
 					if have6 {
 						assert.Check(t, is.Equal(gotOpt6, opt6))
 					}
@@ -233,8 +232,8 @@ func TestIPRangeAt64BitLimit(t *testing.T) {
 			defer network.RemoveNoError(ctx, t, c, netName)
 
 			id := ctr.Create(ctx, t, c, ctr.WithNetworkMode(netName))
-			defer c.ContainerRemove(ctx, id, containertypes.RemoveOptions{Force: true})
-			err := c.ContainerStart(ctx, id, containertypes.StartOptions{})
+			defer c.ContainerRemove(ctx, id, client.ContainerRemoveOptions{Force: true})
+			_, err := c.ContainerStart(ctx, id, client.ContainerStartOptions{})
 			assert.NilError(t, err)
 		})
 	}
@@ -368,11 +367,17 @@ func TestFilterForwardPolicy(t *testing.T) {
 // address is reserved for a gateway, because it won't be used).
 func TestPointToPoint(t *testing.T) {
 	ctx := setupTest(t)
-	apiClient := testEnv.APIClient()
+
+	d := daemon.New(t)
+	d.StartWithBusybox(ctx, t)
+	t.Cleanup(func() { d.Stop(t) })
+
+	apiClient := d.NewClientT(t)
+	t.Cleanup(func() { apiClient.Close() })
 
 	testcases := []struct {
 		name   string
-		netOpt func(*networktypes.CreateOptions)
+		netOpt func(*client.NetworkCreateOptions)
 	}{
 		{
 			name:   "inhibit_ipv4",
@@ -401,7 +406,7 @@ func TestPointToPoint(t *testing.T) {
 				ctr.WithNetworkMode(netName),
 				ctr.WithName(ctrName),
 			)
-			defer apiClient.ContainerRemove(ctx, id, containertypes.RemoveOptions{Force: true})
+			defer apiClient.ContainerRemove(ctx, id, client.ContainerRemoveOptions{Force: true})
 
 			attachCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 			defer cancel()
@@ -409,7 +414,7 @@ func TestPointToPoint(t *testing.T) {
 				ctr.WithCmd([]string{"ping", "-c1", "-W3", ctrName}...),
 				ctr.WithNetworkMode(netName),
 			)
-			defer apiClient.ContainerRemove(ctx, res.ContainerID, containertypes.RemoveOptions{Force: true})
+			defer apiClient.ContainerRemove(ctx, res.ContainerID, client.ContainerRemoveOptions{Force: true})
 			assert.Check(t, is.Equal(res.ExitCode, 0))
 			assert.Check(t, is.Equal(res.Stderr.Len(), 0))
 			assert.Check(t, is.Contains(res.Stdout.String(), "1 packets transmitted, 1 packets received"))
@@ -422,7 +427,13 @@ func TestIsolated(t *testing.T) {
 	skip.If(t, testEnv.IsRootless, "can't inspect bridge addrs in rootless netns")
 
 	ctx := setupTest(t)
-	apiClient := testEnv.APIClient()
+
+	d := daemon.New(t)
+	d.StartWithBusybox(ctx, t)
+	t.Cleanup(func() { d.Stop(t) })
+
+	apiClient := d.NewClientT(t)
+	t.Cleanup(func() { apiClient.Close() })
 
 	const netName = "testisol"
 	const bridgeName = "br-" + netName
@@ -447,7 +458,7 @@ func TestIsolated(t *testing.T) {
 		ctr.WithNetworkMode(netName),
 		ctr.WithName(ctrName),
 	)
-	defer apiClient.ContainerRemove(ctx, id, containertypes.RemoveOptions{Force: true})
+	defer apiClient.ContainerRemove(ctx, id, client.ContainerRemoveOptions{Force: true})
 
 	ping := func(t *testing.T, ipv string) {
 		t.Helper()
@@ -457,7 +468,7 @@ func TestIsolated(t *testing.T) {
 			ctr.WithCmd([]string{"ping", "-c1", "-W3", ipv, "ctr1"}...),
 			ctr.WithNetworkMode(netName),
 		)
-		defer apiClient.ContainerRemove(ctx, res.ContainerID, containertypes.RemoveOptions{Force: true})
+		defer apiClient.ContainerRemove(ctx, res.ContainerID, client.ContainerRemoveOptions{Force: true})
 		if ipv == "-6" && networking.FirewalldRunning() {
 			// FIXME(robmry) - this fails due to https://github.com/moby/moby/issues/49680
 			if res.ExitCode != 1 {
@@ -487,7 +498,7 @@ func TestEndpointWithCustomIfname(t *testing.T) {
 				netlabel.Ifname: "foobar",
 			},
 		}))
-	defer ctr.Remove(ctx, t, apiClient, ctrID, containertypes.RemoveOptions{Force: true})
+	defer ctr.Remove(ctx, t, apiClient, ctrID, client.ContainerRemoveOptions{Force: true})
 
 	out, err := ctr.Output(ctx, apiClient, ctrID)
 	assert.NilError(t, err)
@@ -502,26 +513,27 @@ func TestEndpointWithCustomIfname(t *testing.T) {
 func TestPublishedPortAlreadyInUse(t *testing.T) {
 	ctx := setupTest(t)
 	apiClient := testEnv.APIClient()
+	mappedPort := networktypes.MustParsePort("80/tcp")
 
 	ctr1 := ctr.Run(ctx, t, apiClient,
 		ctr.WithCmd("top"),
 		ctr.WithExposedPorts("80/tcp"),
-		ctr.WithPortMap(containertypes.PortMap{"80/tcp": {{HostPort: "8000"}}}))
-	defer ctr.Remove(ctx, t, apiClient, ctr1, containertypes.RemoveOptions{Force: true})
+		ctr.WithPortMap(networktypes.PortMap{mappedPort: {{HostPort: "8000"}}}))
+	defer ctr.Remove(ctx, t, apiClient, ctr1, client.ContainerRemoveOptions{Force: true})
 
 	ctr2 := ctr.Create(ctx, t, apiClient,
 		ctr.WithCmd("top"),
 		ctr.WithRestartPolicy(containertypes.RestartPolicyAlways),
 		ctr.WithExposedPorts("80/tcp"),
-		ctr.WithPortMap(containertypes.PortMap{"80/tcp": {{HostPort: "8000"}}}))
-	defer ctr.Remove(ctx, t, apiClient, ctr2, containertypes.RemoveOptions{Force: true})
+		ctr.WithPortMap(networktypes.PortMap{mappedPort: {{HostPort: "8000"}}}))
+	defer ctr.Remove(ctx, t, apiClient, ctr2, client.ContainerRemoveOptions{Force: true})
 
-	err := apiClient.ContainerStart(ctx, ctr2, containertypes.StartOptions{})
+	_, err := apiClient.ContainerStart(ctx, ctr2, client.ContainerStartOptions{})
 	assert.Assert(t, is.ErrorContains(err, "failed to set up container networking"))
 
-	inspect, err := apiClient.ContainerInspect(ctx, ctr2)
+	inspect, err := apiClient.ContainerInspect(ctx, ctr2, client.ContainerInspectOptions{})
 	assert.NilError(t, err)
-	assert.Check(t, is.Equal(inspect.State.Status, containertypes.StateCreated))
+	assert.Check(t, is.Equal(inspect.Container.State.Status, containertypes.StateCreated))
 }
 
 // TestAllPortMappingsAreReturned check that dual-stack ports mapped through
@@ -548,19 +560,19 @@ func TestAllPortMappingsAreReturned(t *testing.T) {
 
 	ctrID := ctr.Run(ctx, t, apiClient,
 		ctr.WithExposedPorts("80/tcp", "81/tcp"),
-		ctr.WithPortMap(containertypes.PortMap{"80/tcp": {{HostPort: "8000"}}}),
+		ctr.WithPortMap(networktypes.PortMap{networktypes.MustParsePort("80/tcp"): {{HostPort: "8000"}}}),
 		ctr.WithEndpointSettings("testnetv4", &networktypes.EndpointSettings{}),
 		ctr.WithEndpointSettings("testnetv6", &networktypes.EndpointSettings{}))
-	defer ctr.Remove(ctx, t, apiClient, ctrID, containertypes.RemoveOptions{Force: true})
+	defer ctr.Remove(ctx, t, apiClient, ctrID, client.ContainerRemoveOptions{Force: true})
 
 	inspect := ctr.Inspect(ctx, t, apiClient, ctrID)
-	assert.DeepEqual(t, inspect.NetworkSettings.Ports, containertypes.PortMap{
-		"80/tcp": []containertypes.PortBinding{
-			{HostIP: "0.0.0.0", HostPort: "8000"},
-			{HostIP: "::", HostPort: "8000"},
+	assert.DeepEqual(t, inspect.NetworkSettings.Ports, networktypes.PortMap{
+		networktypes.MustParsePort("80/tcp"): []networktypes.PortBinding{
+			{HostIP: netip.IPv4Unspecified(), HostPort: "8000"},
+			{HostIP: netip.IPv6Unspecified(), HostPort: "8000"},
 		},
-		"81/tcp": nil,
-	})
+		networktypes.MustParsePort("81/tcp"): nil,
+	}, cmpopts.EquateComparable(netip.Addr{}))
 }
 
 // TestFirewalldReloadNoZombies checks that when firewalld is reloaded, rules
@@ -587,10 +599,10 @@ func TestFirewalldReloadNoZombies(t *testing.T) {
 
 	cid := ctr.Run(ctx, t, c,
 		ctr.WithExposedPorts("80/tcp", "81/tcp"),
-		ctr.WithPortMap(containertypes.PortMap{"80/tcp": {{HostPort: "8000"}}}))
+		ctr.WithPortMap(networktypes.PortMap{networktypes.MustParsePort("80/tcp"): {{HostPort: "8000"}}}))
 	defer func() {
 		if !removed {
-			ctr.Remove(ctx, t, c, cid, containertypes.RemoveOptions{Force: true})
+			ctr.Remove(ctx, t, c, cid, client.ContainerRemoveOptions{Force: true})
 		}
 	}()
 
@@ -605,7 +617,7 @@ func TestFirewalldReloadNoZombies(t *testing.T) {
 		"With container: expected rules for %s in: %s", bridgeName, resBeforeDel.Combined())
 
 	// Delete the container and its network.
-	ctr.Remove(ctx, t, c, cid, containertypes.RemoveOptions{Force: true})
+	ctr.Remove(ctx, t, c, cid, client.ContainerRemoveOptions{Force: true})
 	network.RemoveNoError(ctx, t, c, nw)
 	removed = true
 
@@ -651,7 +663,7 @@ func TestLegacyLink(t *testing.T) {
 		ctr.WithCmd("httpd", "-f"),
 	)
 
-	defer ctr.Remove(ctx, t, c, cid, containertypes.RemoveOptions{Force: true})
+	defer ctr.Remove(ctx, t, c, cid, client.ContainerRemoveOptions{Force: true})
 	insp := ctr.Inspect(ctx, t, c, cid)
 	svrAddr := insp.NetworkSettings.Networks["bridge"].IPAddress
 
@@ -664,13 +676,13 @@ func TestLegacyLink(t *testing.T) {
 	}{
 		{
 			name:   "no link",
-			host:   svrAddr,
+			host:   svrAddr.String(),
 			expect: "download timed out",
 		},
 		{
 			name:   "access by address",
 			links:  []string{svrName},
-			host:   svrAddr,
+			host:   svrAddr.String(),
 			expect: "404 Not Found", // Got a response, but the server has nothing to serve.
 		},
 		{
@@ -726,7 +738,7 @@ func TestRemoveLegacyLink(t *testing.T) {
 		ctr.WithName(svrName),
 		ctr.WithCmd("httpd", "-f"),
 	)
-	defer ctr.Remove(ctx, t, c, svrId, containertypes.RemoveOptions{Force: true})
+	defer ctr.Remove(ctx, t, c, svrId, client.ContainerRemoveOptions{Force: true})
 
 	// Run a container linked to the http server.
 	const svrAlias = "thealias"
@@ -735,14 +747,14 @@ func TestRemoveLegacyLink(t *testing.T) {
 		ctr.WithName(clientName),
 		ctr.WithLinks(svrName+":"+svrAlias),
 	)
-	defer ctr.Remove(ctx, t, c, clientId, containertypes.RemoveOptions{Force: true})
+	defer ctr.Remove(ctx, t, c, clientId, client.ContainerRemoveOptions{Force: true})
 
 	// Check the link works.
 	res := ctr.ExecT(ctx, t, c, clientId, []string{"wget", "-T3", "http://" + svrName})
 	assert.Check(t, is.Contains(res.Stderr(), "404 Not Found"))
 
 	// Remove the link ("docker rm --link client/thealias").
-	err := c.ContainerRemove(ctx, clientName+"/"+svrAlias, containertypes.RemoveOptions{RemoveLinks: true})
+	_, err := c.ContainerRemove(ctx, clientName+"/"+svrAlias, client.ContainerRemoveOptions{RemoveLinks: true})
 	assert.Check(t, err)
 
 	// Check both containers are still running.
@@ -757,7 +769,7 @@ func TestRemoveLegacyLink(t *testing.T) {
 
 	// Check the icc=false rules now block access by address.
 	svrAddr := inspSvr.NetworkSettings.Networks["bridge"].IPAddress
-	res = ctr.ExecT(ctx, t, c, clientId, []string{"wget", "-T3", "http://" + svrAddr})
+	res = ctr.ExecT(ctx, t, c, clientId, []string{"wget", "-T3", "http://" + svrAddr.String()})
 	assert.Check(t, is.Contains(res.Stderr(), "download timed out"))
 }
 
@@ -777,20 +789,20 @@ func TestPortMappingRestore(t *testing.T) {
 	const svrName = "svr"
 	cid := ctr.Run(ctx, t, c,
 		ctr.WithExposedPorts("80/tcp"),
-		ctr.WithPortMap(containertypes.PortMap{"80/tcp": {}}),
+		ctr.WithPortMap(networktypes.PortMap{networktypes.MustParsePort("80/tcp"): {}}),
 		ctr.WithName(svrName),
 		ctr.WithRestartPolicy(containertypes.RestartPolicyUnlessStopped),
 		ctr.WithCmd("httpd", "-f"),
 	)
-	defer func() { ctr.Remove(ctx, t, c, cid, containertypes.RemoveOptions{Force: true}) }()
+	defer func() { ctr.Remove(ctx, t, c, cid, client.ContainerRemoveOptions{Force: true}) }()
 
 	check := func() {
 		t.Helper()
 		insp := ctr.Inspect(ctx, t, c, cid)
 		assert.Check(t, is.Equal(insp.State.Running, true))
-		if assert.Check(t, is.Contains(insp.NetworkSettings.Ports, containertypes.PortRangeProto("80/tcp"))) &&
-			assert.Check(t, is.Len(insp.NetworkSettings.Ports["80/tcp"], 2)) {
-			hostPort := insp.NetworkSettings.Ports["80/tcp"][0].HostPort
+		if assert.Check(t, is.Contains(insp.NetworkSettings.Ports, networktypes.MustParsePort("80/tcp"))) &&
+			assert.Check(t, is.Len(insp.NetworkSettings.Ports[networktypes.MustParsePort("80/tcp")], 2)) {
+			hostPort := insp.NetworkSettings.Ports[networktypes.MustParsePort("80/tcp")][0].HostPort
 			res := ctr.RunAttach(ctx, t, c,
 				ctr.WithExtraHost("thehost:host-gateway"),
 				ctr.WithCmd("wget", "-T3", "http://"+net.JoinHostPort("thehost", hostPort)),
@@ -927,4 +939,453 @@ func TestFirewallBackendSwitch(t *testing.T) {
 	assert.Check(t, numRules > 0, "Expected iptables to have at least one rule")
 	assert.Check(t, len(dockerChains) > 0, "Expected iptables to have at least one docker chain")
 	assert.Check(t, !nftablesTablesExist(), "nftables tables exist after running with iptables")
+}
+
+func TestEmptyPortBindingsBC(t *testing.T) {
+	ctx := setupTest(t)
+	d := daemon.New(t)
+	d.StartWithBusybox(ctx, t)
+	defer d.Stop(t)
+
+	createInspect := func(t *testing.T, version string, pbs []networktypes.PortBinding) (networktypes.PortMap, []string) {
+		apiClient := d.NewClientT(t, client.WithVersion(version))
+		defer apiClient.Close()
+
+		// Skip this subtest if the daemon doesn't support the client version.
+		// TODO(aker): drop this once the Engine supports API version >= 1.53
+		_, err := apiClient.ServerVersion(ctx, client.ServerVersionOptions{})
+		if err != nil && strings.Contains(err.Error(), fmt.Sprintf("client version %s is too new", version)) {
+			t.Skipf("requires API %s", version)
+		}
+		assert.NilError(t, err)
+
+		// Create a container with an empty list of port bindings for container port 80/tcp.
+		config := ctr.NewTestConfig(ctr.WithCmd("top"),
+			ctr.WithExposedPorts("80/tcp"),
+			ctr.WithPortMap(networktypes.PortMap{networktypes.MustParsePort("80/tcp"): pbs}))
+		c, err := apiClient.ContainerCreate(ctx, client.ContainerCreateOptions{
+			Config:           config.Config,
+			HostConfig:       config.HostConfig,
+			NetworkingConfig: config.NetworkingConfig,
+			Platform:         config.Platform,
+			Name:             config.Name,
+		})
+		assert.NilError(t, err)
+		defer apiClient.ContainerRemove(ctx, c.ID, client.ContainerRemoveOptions{Force: true})
+
+		// Inspect the container and return its port bindings, along with
+		// warnings returns on container create.
+		inspect, err := apiClient.ContainerInspect(ctx, c.ID, client.ContainerInspectOptions{})
+		assert.NilError(t, err)
+		return inspect.Container.HostConfig.PortBindings, c.Warnings
+	}
+
+	t.Run("backfilling on old client version", func(t *testing.T) {
+		expMappings := networktypes.PortMap{networktypes.MustParsePort("80/tcp"): {
+			{}, // An empty PortBinding is backfilled
+		}}
+		expWarnings := make([]string, 0)
+
+		mappings, warnings := createInspect(t, "1.51", []networktypes.PortBinding{})
+		assert.DeepEqual(t, expMappings, mappings, cmpopts.EquateComparable(netip.Addr{}))
+		assert.DeepEqual(t, expWarnings, warnings, cmpopts.EquateComparable(netip.Addr{}))
+	})
+
+	t.Run("backfilling on API 1.52, with a warning", func(t *testing.T) {
+		expMappings := networktypes.PortMap{networktypes.MustParsePort("80/tcp"): {
+			{}, // An empty PortBinding is backfilled
+		}}
+		expWarnings := []string{
+			"Following container port(s) have an empty list of port-bindings: 80/tcp. Starting with API 1.53, such bindings will be discarded.",
+		}
+
+		mappings, warnings := createInspect(t, "1.52", []networktypes.PortBinding{})
+		assert.DeepEqual(t, expMappings, mappings, cmpopts.EquateComparable(netip.Addr{}))
+		assert.DeepEqual(t, expWarnings, warnings, cmpopts.EquateComparable(netip.Addr{}))
+	})
+
+	t.Run("no backfilling on API 1.53", func(t *testing.T) {
+		expMappings := networktypes.PortMap{}
+		expWarnings := make([]string, 0)
+
+		mappings, warnings := createInspect(t, "1.53", []networktypes.PortBinding{})
+		assert.DeepEqual(t, expMappings, mappings, cmpopts.EquateComparable(netip.Addr{}))
+		assert.DeepEqual(t, expWarnings, warnings, cmpopts.EquateComparable(netip.Addr{}))
+	})
+
+	for _, apiVersion := range []string{"1.51", "1.52", "1.53"} {
+		t.Run("no backfilling on API "+apiVersion+" with non-empty bindings", func(t *testing.T) {
+			expMappings := networktypes.PortMap{networktypes.MustParsePort("80/tcp"): {
+				{HostPort: "8080"},
+			}}
+			expWarnings := make([]string, 0)
+
+			mappings, warnings := createInspect(t, apiVersion, []networktypes.PortBinding{{HostPort: "8080"}})
+			assert.DeepEqual(t, expMappings, mappings, cmpopts.EquateComparable(netip.Addr{}))
+			assert.DeepEqual(t, expWarnings, warnings, cmpopts.EquateComparable(netip.Addr{}))
+		})
+	}
+}
+
+// TestPortBindingBackfillingForOlderContainers verify that the daemon
+// correctly backfills empty port bindings for containers created with prior
+// versions of the Engine.
+func TestPortBindingBackfillingForOlderContainers(t *testing.T) {
+	ctx := setupTest(t)
+	d := daemon.New(t)
+	d.StartWithBusybox(ctx, t)
+	defer d.Stop(t)
+
+	// We don't really care which version of the API is used here as we're
+	// going to tamper with the on-disk state of the container. Even if the
+	// daemon backfills the empty port bindings on ContainerCreate (e.g.,
+	// API < 1.53), the tampering will reinitialize the PortBindings slice to
+	// an empty list.
+	c := d.NewClientT(t)
+
+	cid := ctr.Create(ctx, t, c,
+		ctr.WithExposedPorts("80/tcp"),
+		ctr.WithPortMap(networktypes.PortMap{networktypes.MustParsePort("80/tcp"): {}}))
+	defer c.ContainerRemove(ctx, cid, client.ContainerRemoveOptions{Force: true})
+
+	// Stop the daemon to safely tamper with the on-disk state.
+	d.Stop(t)
+
+	d.TamperWithContainerConfig(t, cid, func(container *container.Container) {
+		// Simulate a container created with an older version of the Engine
+		// by setting an empty list of port bindings.
+		container.HostConfig.PortBindings = networktypes.PortMap{networktypes.MustParsePort("80/tcp"): {}}
+	})
+
+	// Restart the daemon — it should backfill the empty port binding slice.
+	d.StartWithBusybox(ctx, t)
+
+	inspect := ctr.Inspect(ctx, t, c, cid)
+
+	expMappings := networktypes.PortMap{networktypes.MustParsePort("80/tcp"): {
+		{}, // An empty PortBinding is backfilled
+	}}
+	assert.DeepEqual(t, expMappings, inspect.HostConfig.PortBindings, cmpopts.EquateComparable(netip.Addr{}))
+}
+
+func TestBridgeIPAMStatus(t *testing.T) {
+	ctx := testutil.StartSpan(baseContext, t)
+	d := daemon.New(t)
+	d.StartWithBusybox(ctx, t)
+	defer d.Stop(t)
+
+	c := d.NewClientT(t, client.WithVersion("1.52"))
+
+	checkSubnets := func(
+		netName string, want networktypes.SubnetStatuses,
+	) bool {
+		t.Helper()
+		res, err := c.NetworkInspect(ctx, netName, client.NetworkInspectOptions{})
+		if assert.Check(t, err) && assert.Check(t, res.Network.Status != nil) {
+			return assert.Check(t, is.DeepEqual(want, res.Network.Status.IPAM.Subnets))
+		}
+		return false
+	}
+
+	t.Run("DualStack", func(t *testing.T) {
+		const (
+			netName = "testipambridge"
+
+			ipv4gw             = "192.168.0.1"
+			ipv4Range          = "192.168.0.64/31"
+			prefIPv4OutOfRange = "192.168.0.129"
+			auxIPv4FromRange   = "192.168.0.65"
+			auxIPv4OutOfRange  = "192.168.0.128"
+
+			ipv6gw             = "2001:db8:abcd::1"
+			ipv6Range          = "2001:db8:abcd::/120"
+			prefIPv6OutOfRange = "2001:db8:abcd::9000"
+			auxIPv6FromRange   = "2001:db8:abcd::2a"
+			auxIPv6OutOfRange  = "2001:db8:abcd::8000"
+		)
+		var (
+			cidrv4 = netip.MustParsePrefix("192.168.0.0/24")
+			cidrv6 = netip.MustParsePrefix("2001:db8:abcd::/64")
+		)
+
+		network.CreateNoError(ctx, t, c, netName,
+			network.WithIPv4(true),
+			network.WithIPAMConfig(networktypes.IPAMConfig{
+				Subnet:  cidrv4,
+				IPRange: netip.MustParsePrefix(ipv4Range),
+				Gateway: netip.MustParseAddr(ipv4gw),
+				AuxAddress: map[string]netip.Addr{
+					"reserved":   netip.MustParseAddr(auxIPv4FromRange),
+					"reserved_1": netip.MustParseAddr(auxIPv4OutOfRange),
+				},
+			}),
+			network.WithIPv6(),
+			network.WithIPAMConfig(networktypes.IPAMConfig{
+				Subnet:  cidrv6,
+				IPRange: netip.MustParsePrefix(ipv6Range),
+				Gateway: netip.MustParseAddr(ipv6gw),
+				AuxAddress: map[string]netip.Addr{
+					"reserved1": netip.MustParseAddr(auxIPv6FromRange),
+					"reserved2": netip.MustParseAddr(auxIPv6OutOfRange),
+				},
+			}),
+		)
+		defer c.NetworkRemove(ctx, netName, client.NetworkRemoveOptions{})
+
+		checkSubnets(netName, map[netip.Prefix]networktypes.SubnetStatus{
+			cidrv4: {
+				// 1 subnet + 1 gateway + 1 broadcast + 2 aux addresses
+				IPsInUse: 5,
+				// IPv4 /31 IPRange (2 addresses) - aux in-range
+				DynamicIPsAvailable: 1,
+			},
+			cidrv6: {
+				IPsInUse:            4,   // 1 gateway + 1 anycast + 2 aux addresses
+				DynamicIPsAvailable: 253, // IPv6 /120 IPRange (256 addresses) - 1 router-anycast - 1 gateway - 1 aux in-range
+			},
+		})
+
+		func() {
+			// From IPRange pool: both counters should be changed by 1
+			id := ctr.Run(ctx, t, c, ctr.WithNetworkMode(netName))
+			defer c.ContainerRemove(ctx, id, client.ContainerRemoveOptions{Force: true})
+
+			checkSubnets(netName, map[netip.Prefix]networktypes.SubnetStatus{
+				cidrv4: {
+					IPsInUse:            6,
+					DynamicIPsAvailable: 0,
+				},
+				cidrv6: {
+					IPsInUse:            5,
+					DynamicIPsAvailable: 252,
+				},
+			})
+
+			// Out of IPRange pools: subnet counter should be changed by 1
+			id = ctr.Run(ctx, t, c,
+				ctr.WithNetworkMode(netName),
+				ctr.WithIPv4(netName, prefIPv4OutOfRange),
+				ctr.WithIPv6(netName, prefIPv6OutOfRange),
+			)
+			defer c.ContainerRemove(ctx, id, client.ContainerRemoveOptions{Force: true})
+
+			checkSubnets(netName, map[netip.Prefix]networktypes.SubnetStatus{
+				cidrv4: {
+					IPsInUse:            7,
+					DynamicIPsAvailable: 0, // unchanged
+				},
+				cidrv6: {
+					IPsInUse:            6,
+					DynamicIPsAvailable: 252, // unchanged
+				},
+			})
+		}()
+
+		// Counters should decrease after container removal
+		checkSubnets(netName, map[netip.Prefix]networktypes.SubnetStatus{
+			cidrv4: {
+				IPsInUse:            5,
+				DynamicIPsAvailable: 1,
+			},
+			cidrv6: {
+				IPsInUse:            4,
+				DynamicIPsAvailable: 253,
+			},
+		})
+
+		oldc := d.NewClientT(t, client.WithVersion("1.51"))
+		res, err := oldc.NetworkInspect(ctx, netName, client.NetworkInspectOptions{})
+		if assert.Check(t, err) {
+			assert.Check(t, res.Network.Status == nil, "expected nil Status with API version 1.51")
+		}
+	})
+
+	t.Run("IPv6", func(t *testing.T) {
+		const netName = "testipambridgev6"
+		cidr := netip.MustParsePrefix("2001:db8:abcd::/56")
+		network.CreateNoError(ctx, t, c, netName,
+			network.WithIPv4(false),
+			network.WithIPv6(),
+			network.WithIPAMConfig(networktypes.IPAMConfig{
+				Subnet: cidr,
+			}),
+		)
+		defer c.NetworkRemove(ctx, netName, client.NetworkRemoveOptions{})
+
+		checkSubnets(netName, map[netip.Prefix]networktypes.SubnetStatus{
+			cidr: {
+				IPsInUse:            2,
+				DynamicIPsAvailable: math.MaxUint64,
+			},
+		})
+	})
+}
+
+// TestJoinError checks that if network connection fails late in the process, it's
+// rolled back properly - the failed connection should not show up in container
+// or network inspect, and the container should not gain a network interface.
+func TestJoinError(t *testing.T) {
+	ctx := setupTest(t)
+	d := daemon.New(t)
+	d.StartWithBusybox(ctx, t)
+	defer d.Stop(t)
+	c := d.NewClientT(t)
+
+	const intNet = "intnet"
+	const gwAddr = "192.168.123.1"
+	network.CreateNoError(ctx, t, c, intNet,
+		network.WithInternal(),
+		network.WithIPAM("192.168.123.0/24", gwAddr),
+	)
+	defer network.RemoveNoError(ctx, t, c, intNet)
+
+	const extNet = "extnet"
+	network.CreateNoError(ctx, t, c, extNet)
+	defer network.RemoveNoError(ctx, t, c, extNet)
+
+	cid := ctr.Run(ctx, t, c,
+		ctr.WithNetworkMode(intNet),
+		ctr.WithPrivileged(true),
+	)
+	defer c.ContainerRemove(ctx, cid, client.ContainerRemoveOptions{Force: true})
+
+	// Add a default route to the container, so that connecting extNet will fail to
+	// set up its own default route.
+	res := ctr.ExecT(ctx, t, c, cid, []string{"ip", "route", "add", "default", "via", gwAddr})
+	assert.Equal(t, res.ExitCode, 0)
+
+	// Expect an error when connecting extNet.
+	_, err := c.NetworkConnect(ctx, extNet, client.NetworkConnectOptions{
+		Container: cid,
+	})
+	assert.Check(t, is.ErrorContains(err, "failed to set gateway: file exists"))
+
+	// Only intNet should show up in container inspect.
+	ctrInsp := ctr.Inspect(ctx, t, c, cid)
+	assert.Check(t, is.Len(ctrInsp.NetworkSettings.Networks, 1))
+	assert.Check(t, is.Contains(ctrInsp.NetworkSettings.Networks, intNet))
+
+	// extNet should not report any attached containers
+	extNetInsp, err := c.NetworkInspect(ctx, extNet, client.NetworkInspectOptions{})
+	assert.Check(t, err)
+	assert.Check(t, is.Len(extNetInsp.Network.Containers, 0))
+
+	// The container should have an eth0, but no eth1.
+	res = ctr.ExecT(ctx, t, c, cid, []string{"ip", "link", "show", "eth0"})
+	assert.Check(t, is.Equal(res.ExitCode, 0), "container should have an eth0")
+	res = ctr.ExecT(ctx, t, c, cid, []string{"ip", "link", "show", "eth1"})
+	assert.Check(t, is.Contains(res.Stderr(), "can't find device"), "container should not have an eth1")
+
+	// Remove the dodgy route.
+	res = ctr.ExecT(ctx, t, c, cid, []string{"ip", "route", "del", "default", "via", gwAddr})
+	assert.Equal(t, res.ExitCode, 0)
+
+	// Check network connect now succeeds.
+	_, err = c.NetworkConnect(ctx, extNet, client.NetworkConnectOptions{
+		Container: cid,
+	})
+	assert.Check(t, err)
+	ctrInsp = ctr.Inspect(ctx, t, c, cid)
+	assert.Check(t, is.Len(ctrInsp.NetworkSettings.Networks, 2))
+	assert.Check(t, is.Contains(ctrInsp.NetworkSettings.Networks, intNet))
+	assert.Check(t, is.Contains(ctrInsp.NetworkSettings.Networks, extNet))
+	extNetInsp, err = c.NetworkInspect(ctx, extNet, client.NetworkInspectOptions{})
+	assert.Check(t, err)
+	assert.Check(t, is.Len(extNetInsp.Network.Containers, 1))
+	res = ctr.ExecT(ctx, t, c, cid, []string{"ip", "link", "show", "eth0"})
+	assert.Check(t, is.Equal(res.ExitCode, 0), "container should have an eth0")
+	res = ctr.ExecT(ctx, t, c, cid, []string{"ip", "link", "show", "eth1"})
+	assert.Check(t, is.Equal(res.ExitCode, 0), "container should have an eth1")
+}
+
+func TestPreferredSubnetRestore(t *testing.T) {
+	skip.If(t, testEnv.IsRootless(), "fails before and after restart")
+
+	ctx := setupTest(t)
+	d := daemon.New(t)
+	d.StartWithBusybox(ctx, t)
+	defer d.Stop(t)
+	c := d.NewClientT(t)
+
+	const v4netName = "testnetv4restore"
+	network.CreateNoError(ctx, t, c, v4netName,
+		network.WithIPv4(true),
+		network.WithIPAMConfig(networktypes.IPAMConfig{
+			Subnet: netip.MustParsePrefix("0.0.0.0/24"),
+		}),
+	)
+
+	defer func() { network.RemoveNoError(ctx, t, c, v4netName) }()
+
+	const v6netName = "testnetv6restore"
+	network.CreateNoError(ctx, t, c, v6netName,
+		network.WithIPv4(false),
+		network.WithIPv6(),
+		network.WithIPAMConfig(networktypes.IPAMConfig{
+			Subnet: netip.MustParsePrefix("::/120"),
+		}),
+	)
+
+	defer func() { network.RemoveNoError(ctx, t, c, v6netName) }()
+
+	const dualStackNetName = "testnetdualrestore"
+	network.CreateNoError(ctx, t, c, dualStackNetName,
+		network.WithIPv4(true),
+		network.WithIPv6(),
+		network.WithIPAMConfig(networktypes.IPAMConfig{
+			Subnet: netip.MustParsePrefix("0.0.0.0/24"),
+		}, networktypes.IPAMConfig{
+			Subnet: netip.MustParsePrefix("::/120"),
+		}),
+	)
+
+	defer func() { network.RemoveNoError(ctx, t, c, dualStackNetName) }()
+
+	inspOpts := client.NetworkInspectOptions{}
+
+	v4Insp := network.InspectNoError(ctx, t, c, v4netName, inspOpts)
+	assert.Check(t, is.Len(v4Insp.Network.IPAM.Config, 1))
+	v4allocCidr := v4Insp.Network.IPAM.Config[0].Subnet
+	assert.Check(t, is.Equal(v4allocCidr.Addr().IsUnspecified(), false), "expected specific subnet")
+
+	v6Insp := network.InspectNoError(ctx, t, c, v6netName, inspOpts)
+	assert.Check(t, is.Len(v6Insp.Network.IPAM.Config, 1))
+	v6allocCidr := v6Insp.Network.IPAM.Config[0].Subnet
+	assert.Check(t, is.Equal(v6allocCidr.Addr().IsUnspecified(), false), "expected specific subnet")
+
+	dualStackInsp := network.InspectNoError(ctx, t, c, dualStackNetName, inspOpts)
+	assert.Check(t, is.Len(dualStackInsp.Network.IPAM.Config, 2))
+	var dualv4, dualv6 netip.Prefix
+	if dualStackInsp.Network.IPAM.Config[0].Subnet.Addr().Is4() {
+		dualv4 = dualStackInsp.Network.IPAM.Config[0].Subnet
+		dualv6 = dualStackInsp.Network.IPAM.Config[1].Subnet
+	} else {
+		dualv4 = dualStackInsp.Network.IPAM.Config[1].Subnet
+		dualv6 = dualStackInsp.Network.IPAM.Config[0].Subnet
+	}
+	assert.Check(t, is.Equal(dualv4.Addr().IsUnspecified(), false), "expected specific v4 subnet")
+	assert.Check(t, is.Equal(dualv6.Addr().IsUnspecified(), false), "expected specific v6 subnet")
+
+	d.Restart(t)
+
+	v4Insp = network.InspectNoError(ctx, t, c, v4netName, inspOpts)
+	assert.Check(t, is.Len(v4Insp.Network.IPAM.Config, 1))
+	assert.Check(t, is.Equal(v4Insp.Network.IPAM.Config[0].Subnet, v4allocCidr))
+
+	v6Insp = network.InspectNoError(ctx, t, c, v6netName, inspOpts)
+	assert.Check(t, is.Len(v6Insp.Network.IPAM.Config, 1))
+	assert.Check(t, is.Equal(v6Insp.Network.IPAM.Config[0].Subnet, v6allocCidr))
+
+	dualStackInsp = network.InspectNoError(ctx, t, c, dualStackNetName, inspOpts)
+	assert.Check(t, is.Len(dualStackInsp.Network.IPAM.Config, 2))
+	var dualv4after, dualv6after netip.Prefix
+	if dualStackInsp.Network.IPAM.Config[0].Subnet.Addr().Is4() {
+		dualv4after = dualStackInsp.Network.IPAM.Config[0].Subnet
+		dualv6after = dualStackInsp.Network.IPAM.Config[1].Subnet
+	} else {
+		dualv4after = dualStackInsp.Network.IPAM.Config[1].Subnet
+		dualv6after = dualStackInsp.Network.IPAM.Config[0].Subnet
+	}
+	assert.Check(t, is.Equal(dualv4after, dualv4), "expected same v4 subnet after restart")
+	assert.Check(t, is.Equal(dualv6after, dualv6), "expected same v6 subnet after restart")
 }

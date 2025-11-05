@@ -17,13 +17,52 @@ type DiskUsageOptions struct {
 
 	// Volumes controls whether volume disk usage should be computed.
 	Volumes bool
+
+	// Verbose indicates whether to include detailed information.
+	Verbose bool
 }
 
 // DiskUsage contains the information returned by the backend for the
 // GET "/system/df" endpoint.
 type DiskUsage struct {
-	Images     *image.DiskUsage
-	Containers *container.DiskUsage
-	Volumes    *volume.DiskUsage
-	BuildCache *build.CacheDiskUsage
+	Images     *ImageDiskUsage
+	Containers *ContainerDiskUsage
+	Volumes    *VolumeDiskUsage
+	BuildCache *BuildCacheDiskUsage
+}
+
+// BuildCacheDiskUsage contains disk usage for the build cache.
+type BuildCacheDiskUsage struct {
+	ActiveCount int64
+	TotalCount  int64
+	TotalSize   int64
+	Reclaimable int64
+	Items       []*build.CacheRecord
+}
+
+// ContainerDiskUsage contains disk usage for containers.
+type ContainerDiskUsage struct {
+	ActiveCount int64
+	TotalCount  int64
+	TotalSize   int64
+	Reclaimable int64
+	Items       []*container.Summary
+}
+
+// ImageDiskUsage contains disk usage for images.
+type ImageDiskUsage struct {
+	ActiveCount int64
+	TotalCount  int64
+	TotalSize   int64
+	Reclaimable int64
+	Items       []*image.Summary
+}
+
+// VolumeDiskUsage contains disk usage for volumes.
+type VolumeDiskUsage struct {
+	ActiveCount int64
+	TotalCount  int64
+	TotalSize   int64
+	Reclaimable int64
+	Items       []*volume.Volume
 }

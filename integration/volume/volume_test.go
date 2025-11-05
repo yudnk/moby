@@ -10,16 +10,14 @@ import (
 
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/google/go-cmp/cmp/cmpopts"
-	containertypes "github.com/moby/moby/api/types/container"
-	"github.com/moby/moby/api/types/filters"
 	"github.com/moby/moby/api/types/volume"
 	"github.com/moby/moby/client"
 	"github.com/moby/moby/v2/integration/internal/build"
 	"github.com/moby/moby/v2/integration/internal/container"
-	"github.com/moby/moby/v2/testutil"
-	"github.com/moby/moby/v2/testutil/daemon"
-	"github.com/moby/moby/v2/testutil/fakecontext"
-	"github.com/moby/moby/v2/testutil/request"
+	"github.com/moby/moby/v2/internal/testutil"
+	"github.com/moby/moby/v2/internal/testutil/daemon"
+	"github.com/moby/moby/v2/internal/testutil/fakecontext"
+	"github.com/moby/moby/v2/internal/testutil/request"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 	"gotest.tools/v3/skip"
@@ -34,35 +32,35 @@ func TestVolumesCreateAndList(t *testing.T) {
 	if testEnv.DaemonInfo.OSType == "windows" {
 		name = strings.ToLower(name)
 	}
-	vol, err := apiClient.VolumeCreate(ctx, volume.CreateOptions{
+	created, err := apiClient.VolumeCreate(ctx, client.VolumeCreateOptions{
 		Name: name,
 	})
 	assert.NilError(t, err)
+	namedV := created.Volume
 
 	expected := volume.Volume{
 		// Ignore timestamp of CreatedAt
-		CreatedAt:  vol.CreatedAt,
+		CreatedAt:  namedV.CreatedAt,
 		Driver:     "local",
 		Scope:      "local",
 		Name:       name,
 		Mountpoint: filepath.Join(testEnv.DaemonInfo.DockerRootDir, "volumes", name, "_data"),
 	}
-	assert.Check(t, is.DeepEqual(vol, expected, cmpopts.EquateEmpty()))
+	assert.Check(t, is.DeepEqual(namedV, expected, cmpopts.EquateEmpty()))
 
-	volList, err := apiClient.VolumeList(ctx, volume.ListOptions{})
+	res, err := apiClient.VolumeList(ctx, client.VolumeListOptions{})
 	assert.NilError(t, err)
-	assert.Assert(t, len(volList.Volumes) > 0)
+	assert.Assert(t, len(res.Items) > 0)
 
-	volumes := volList.Volumes[:0]
-	for _, v := range volList.Volumes {
-		if v.Name == vol.Name {
+	volumes := res.Items[:0]
+	for _, v := range res.Items {
+		if v.Name == namedV.Name {
 			volumes = append(volumes, v)
 		}
 	}
 
 	assert.Check(t, is.Equal(len(volumes), 1))
-	assert.Check(t, volumes[0] != nil)
-	assert.Check(t, is.DeepEqual(*volumes[0], expected, cmpopts.EquateEmpty()))
+	assert.Check(t, is.DeepEqual(volumes[0], expected, cmpopts.EquateEmpty()))
 }
 
 func TestVolumesRemove(t *testing.T) {
@@ -73,33 +71,33 @@ func TestVolumesRemove(t *testing.T) {
 
 	id := container.Create(ctx, t, apiClient, container.WithVolume(prefix+slash+"foo"))
 
-	c, err := apiClient.ContainerInspect(ctx, id)
+	inspect, err := apiClient.ContainerInspect(ctx, id, client.ContainerInspectOptions{})
 	assert.NilError(t, err)
-	vname := c.Mounts[0].Name
+	vname := inspect.Container.Mounts[0].Name
 
 	t.Run("volume in use", func(t *testing.T) {
-		err = apiClient.VolumeRemove(ctx, vname, false)
+		_, err = apiClient.VolumeRemove(ctx, vname, client.VolumeRemoveOptions{})
 		assert.Check(t, is.ErrorType(err, cerrdefs.IsConflict))
 		assert.Check(t, is.ErrorContains(err, "volume is in use"))
 	})
 
 	t.Run("volume not in use", func(t *testing.T) {
-		err = apiClient.ContainerRemove(ctx, id, containertypes.RemoveOptions{
+		_, err = apiClient.ContainerRemove(ctx, id, client.ContainerRemoveOptions{
 			Force: true,
 		})
 		assert.NilError(t, err)
 
-		err = apiClient.VolumeRemove(ctx, vname, false)
+		_, err = apiClient.VolumeRemove(ctx, vname, client.VolumeRemoveOptions{})
 		assert.NilError(t, err)
 	})
 
 	t.Run("non-existing volume", func(t *testing.T) {
-		err = apiClient.VolumeRemove(ctx, "no_such_volume", false)
+		_, err = apiClient.VolumeRemove(ctx, "no_such_volume", client.VolumeRemoveOptions{})
 		assert.Check(t, is.ErrorType(err, cerrdefs.IsNotFound))
 	})
 
 	t.Run("non-existing volume force", func(t *testing.T) {
-		err = apiClient.VolumeRemove(ctx, "no_such_volume", true)
+		_, err = apiClient.VolumeRemove(ctx, "no_such_volume", client.VolumeRemoveOptions{Force: true})
 		assert.NilError(t, err)
 	})
 }
@@ -125,33 +123,33 @@ func TestVolumesRemoveSwarmEnabled(t *testing.T) {
 	prefix, slash := getPrefixAndSlashFromDaemonPlatform()
 	id := container.Create(ctx, t, apiClient, container.WithVolume(prefix+slash+"foo"))
 
-	c, err := apiClient.ContainerInspect(ctx, id)
+	inspect, err := apiClient.ContainerInspect(ctx, id, client.ContainerInspectOptions{})
 	assert.NilError(t, err)
-	vname := c.Mounts[0].Name
+	vname := inspect.Container.Mounts[0].Name
 
 	t.Run("volume in use", func(t *testing.T) {
-		err = apiClient.VolumeRemove(ctx, vname, false)
+		_, err = apiClient.VolumeRemove(ctx, vname, client.VolumeRemoveOptions{})
 		assert.Check(t, is.ErrorType(err, cerrdefs.IsConflict))
 		assert.Check(t, is.ErrorContains(err, "volume is in use"))
 	})
 
 	t.Run("volume not in use", func(t *testing.T) {
-		err = apiClient.ContainerRemove(ctx, id, containertypes.RemoveOptions{
+		_, err = apiClient.ContainerRemove(ctx, id, client.ContainerRemoveOptions{
 			Force: true,
 		})
 		assert.NilError(t, err)
 
-		err = apiClient.VolumeRemove(ctx, vname, false)
+		_, err = apiClient.VolumeRemove(ctx, vname, client.VolumeRemoveOptions{})
 		assert.NilError(t, err)
 	})
 
 	t.Run("non-existing volume", func(t *testing.T) {
-		err = apiClient.VolumeRemove(ctx, "no_such_volume", false)
+		_, err = apiClient.VolumeRemove(ctx, "no_such_volume", client.VolumeRemoveOptions{})
 		assert.Check(t, is.ErrorType(err, cerrdefs.IsNotFound))
 	})
 
 	t.Run("non-existing volume force", func(t *testing.T) {
-		err = apiClient.VolumeRemove(ctx, "no_such_volume", true)
+		_, err = apiClient.VolumeRemove(ctx, "no_such_volume", client.VolumeRemoveOptions{Force: true})
 		assert.NilError(t, err)
 	})
 }
@@ -161,28 +159,29 @@ func TestVolumesInspect(t *testing.T) {
 	apiClient := testEnv.APIClient()
 
 	now := time.Now()
-	vol, err := apiClient.VolumeCreate(ctx, volume.CreateOptions{})
+	created, err := apiClient.VolumeCreate(ctx, client.VolumeCreateOptions{})
+	assert.NilError(t, err)
+	v := created.Volume
+
+	res, err := apiClient.VolumeInspect(ctx, v.Name, client.VolumeInspectOptions{})
 	assert.NilError(t, err)
 
-	inspected, err := apiClient.VolumeInspect(ctx, vol.Name)
-	assert.NilError(t, err)
-
-	assert.Check(t, is.DeepEqual(inspected, vol, cmpopts.EquateEmpty()))
+	assert.Check(t, is.DeepEqual(res.Volume, v, cmpopts.EquateEmpty()))
 
 	// comparing CreatedAt field time for the new volume to now. Truncate to 1 minute precision to avoid false positive
-	createdAt, err := time.Parse(time.RFC3339, strings.TrimSpace(inspected.CreatedAt))
+	createdAt, err := time.Parse(time.RFC3339, strings.TrimSpace(res.Volume.CreatedAt))
 	assert.NilError(t, err)
 	assert.Check(t, createdAt.Unix()-now.Unix() < 60, "CreatedAt (%s) exceeds creation time (%s) 60s", createdAt, now)
 
 	// update atime and mtime for the "_data" directory (which would happen during volume initialization)
 	modifiedAt := time.Now().Local().Add(5 * time.Hour)
-	err = os.Chtimes(inspected.Mountpoint, modifiedAt, modifiedAt)
+	err = os.Chtimes(res.Volume.Mountpoint, modifiedAt, modifiedAt)
 	assert.NilError(t, err)
 
-	inspected, err = apiClient.VolumeInspect(ctx, vol.Name)
+	res, err = apiClient.VolumeInspect(ctx, v.Name, client.VolumeInspectOptions{})
 	assert.NilError(t, err)
 
-	createdAt2, err := time.Parse(time.RFC3339, strings.TrimSpace(inspected.CreatedAt))
+	createdAt2, err := time.Parse(time.RFC3339, strings.TrimSpace(res.Volume.CreatedAt))
 	assert.NilError(t, err)
 
 	// Check that CreatedAt didn't change after updating atime and mtime of the "_data" directory
@@ -262,48 +261,69 @@ func TestVolumePruneAnonymous(t *testing.T) {
 	apiClient := testEnv.APIClient()
 
 	// Create an anonymous volume
-	v, err := apiClient.VolumeCreate(ctx, volume.CreateOptions{})
+	created, err := apiClient.VolumeCreate(ctx, client.VolumeCreateOptions{})
 	assert.NilError(t, err)
+	anonV := created.Volume
 
 	// Create a named volume
-	vNamed, err := apiClient.VolumeCreate(ctx, volume.CreateOptions{
+	created, err = apiClient.VolumeCreate(ctx, client.VolumeCreateOptions{
 		Name: "test",
 	})
 	assert.NilError(t, err)
+	namedV := created.Volume
 
 	// Prune anonymous volumes
-	pruneReport, err := apiClient.VolumesPrune(ctx, filters.Args{})
+	prune, err := apiClient.VolumesPrune(ctx, client.VolumePruneOptions{})
 	assert.NilError(t, err)
-	assert.Check(t, is.Equal(len(pruneReport.VolumesDeleted), 1))
-	assert.Check(t, is.Equal(pruneReport.VolumesDeleted[0], v.Name))
+	report := prune.Report
+	assert.Check(t, is.Equal(len(report.VolumesDeleted), 1))
+	assert.Check(t, is.Equal(report.VolumesDeleted[0], anonV.Name))
 
-	_, err = apiClient.VolumeInspect(ctx, vNamed.Name)
+	_, err = apiClient.VolumeInspect(ctx, namedV.Name, client.VolumeInspectOptions{})
 	assert.NilError(t, err)
 
 	// Prune all volumes
-	_, err = apiClient.VolumeCreate(ctx, volume.CreateOptions{})
+	_, err = apiClient.VolumeCreate(ctx, client.VolumeCreateOptions{})
+	assert.NilError(t, err)
+	prune, err = apiClient.VolumesPrune(ctx, client.VolumePruneOptions{
+		All: true,
+	})
+	assert.NilError(t, err)
+	assert.Check(t, is.Equal(len(prune.Report.VolumesDeleted), 2))
+
+	// Create a named volume and an anonymous volume, and prune all
+	_, err = apiClient.VolumeCreate(ctx, client.VolumeCreateOptions{})
+	assert.NilError(t, err)
+	_, err = apiClient.VolumeCreate(ctx, client.VolumeCreateOptions{Name: "test"})
 	assert.NilError(t, err)
 
-	pruneReport, err = apiClient.VolumesPrune(ctx, filters.NewArgs(filters.Arg("all", "1")))
+	prune, err = apiClient.VolumesPrune(ctx, client.VolumePruneOptions{
+		All: true,
+	})
+
 	assert.NilError(t, err)
-	assert.Check(t, is.Equal(len(pruneReport.VolumesDeleted), 2))
+	report = prune.Report
+	assert.Check(t, is.Equal(len(report.VolumesDeleted), 2))
 
 	// Validate that older API versions still have the old behavior of pruning all local volumes
-	clientOld, err := client.NewClientWithOpts(client.FromEnv, client.WithVersion("1.41"))
+	clientOld, err := client.New(client.FromEnv, client.WithVersion("1.41"))
 	assert.NilError(t, err)
 	defer clientOld.Close()
 	assert.Equal(t, clientOld.ClientVersion(), "1.41")
 
-	v, err = apiClient.VolumeCreate(ctx, volume.CreateOptions{})
+	created, err = apiClient.VolumeCreate(ctx, client.VolumeCreateOptions{})
 	assert.NilError(t, err)
-	vNamed, err = apiClient.VolumeCreate(ctx, volume.CreateOptions{Name: "test-api141"})
+	anonV = created.Volume
+	created, err = apiClient.VolumeCreate(ctx, client.VolumeCreateOptions{Name: "test-api141"})
 	assert.NilError(t, err)
+	namedV = created.Volume
 
-	pruneReport, err = clientOld.VolumesPrune(ctx, filters.Args{})
+	prune, err = clientOld.VolumesPrune(ctx, client.VolumePruneOptions{})
 	assert.NilError(t, err)
-	assert.Check(t, is.Equal(len(pruneReport.VolumesDeleted), 2))
-	assert.Check(t, is.Contains(pruneReport.VolumesDeleted, v.Name))
-	assert.Check(t, is.Contains(pruneReport.VolumesDeleted, vNamed.Name))
+	report = prune.Report
+	assert.Check(t, is.Equal(len(report.VolumesDeleted), 2))
+	assert.Check(t, is.Contains(report.VolumesDeleted, anonV.Name))
+	assert.Check(t, is.Contains(report.VolumesDeleted, namedV.Name))
 }
 
 func TestVolumePruneAnonFromImage(t *testing.T) {
@@ -321,20 +341,20 @@ VOLUME ` + volDest
 	img := build.Do(ctx, t, apiClient, fakecontext.New(t, "", fakecontext.WithDockerfile(dockerfile)))
 
 	id := container.Create(ctx, t, apiClient, container.WithImage(img))
-	defer apiClient.ContainerRemove(ctx, id, containertypes.RemoveOptions{})
+	defer apiClient.ContainerRemove(ctx, id, client.ContainerRemoveOptions{})
 
-	inspect, err := apiClient.ContainerInspect(ctx, id)
+	inspect, err := apiClient.ContainerInspect(ctx, id, client.ContainerInspectOptions{})
 	assert.NilError(t, err)
 
-	assert.Assert(t, is.Len(inspect.Mounts, 1))
+	assert.Assert(t, is.Len(inspect.Container.Mounts, 1))
 
-	volumeName := inspect.Mounts[0].Name
+	volumeName := inspect.Container.Mounts[0].Name
 	assert.Assert(t, volumeName != "")
 
-	err = apiClient.ContainerRemove(ctx, id, containertypes.RemoveOptions{})
+	_, err = apiClient.ContainerRemove(ctx, id, client.ContainerRemoveOptions{})
 	assert.NilError(t, err)
 
-	pruneReport, err := apiClient.VolumesPrune(ctx, filters.Args{})
+	res, err := apiClient.VolumesPrune(ctx, client.VolumePruneOptions{})
 	assert.NilError(t, err)
-	assert.Assert(t, is.Contains(pruneReport.VolumesDeleted, volumeName))
+	assert.Assert(t, is.Contains(res.Report.VolumesDeleted, volumeName))
 }

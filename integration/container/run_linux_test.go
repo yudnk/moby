@@ -2,7 +2,10 @@ package container
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,12 +16,13 @@ import (
 	"github.com/docker/go-units"
 	"github.com/moby/moby/api/pkg/stdcopy"
 	containertypes "github.com/moby/moby/api/types/container"
-	"github.com/moby/moby/api/types/versions"
+	networktypes "github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/client"
 	"github.com/moby/moby/v2/integration/internal/container"
 	net "github.com/moby/moby/v2/integration/internal/network"
-	"github.com/moby/moby/v2/testutil"
-	"github.com/moby/moby/v2/testutil/daemon"
+	"github.com/moby/moby/v2/internal/testutil"
+	"github.com/moby/moby/v2/internal/testutil/daemon"
+	"github.com/moby/moby/v2/internal/testutil/request"
 	"golang.org/x/sys/unix"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
@@ -46,10 +50,10 @@ func TestNISDomainname(t *testing.T) {
 		c.Config.Hostname = hostname
 		c.Config.Domainname = domainname
 	})
-	inspect, err := apiClient.ContainerInspect(ctx, cID)
+	inspect, err := apiClient.ContainerInspect(ctx, cID, client.ContainerInspectOptions{})
 	assert.NilError(t, err)
-	assert.Check(t, is.Equal(hostname, inspect.Config.Hostname))
-	assert.Check(t, is.Equal(domainname, inspect.Config.Domainname))
+	assert.Check(t, is.Equal(hostname, inspect.Container.Config.Hostname))
+	assert.Check(t, is.Equal(domainname, inspect.Container.Config.Domainname))
 
 	// Check hostname.
 	res, err := container.Exec(ctx, apiClient, cID,
@@ -86,9 +90,9 @@ func TestHostnameDnsResolution(t *testing.T) {
 		c.Config.Hostname = hostname
 		c.HostConfig.NetworkMode = containertypes.NetworkMode(netName)
 	})
-	inspect, err := apiClient.ContainerInspect(ctx, cID)
+	inspect, err := apiClient.ContainerInspect(ctx, cID, client.ContainerInspectOptions{})
 	assert.NilError(t, err)
-	assert.Check(t, is.Equal(hostname, inspect.Config.Hostname))
+	assert.Check(t, is.Equal(hostname, inspect.Container.Config.Hostname))
 
 	// Clear hosts file so ping will use DNS for hostname resolution
 	res, err := container.Exec(ctx, apiClient, cID,
@@ -174,7 +178,6 @@ func TestPrivilegedHostDevices(t *testing.T) {
 
 func TestRunConsoleSize(t *testing.T) {
 	skip.If(t, testEnv.DaemonInfo.OSType != "linux")
-	skip.If(t, versions.LessThan(testEnv.DaemonAPIVersion(), "1.42"), "skip test from new feature")
 
 	ctx := setupTest(t)
 	apiClient := testEnv.APIClient()
@@ -188,7 +191,7 @@ func TestRunConsoleSize(t *testing.T) {
 
 	poll.WaitOn(t, container.IsStopped(ctx, apiClient, cID))
 
-	out, err := apiClient.ContainerLogs(ctx, cID, containertypes.LogsOptions{ShowStdout: true})
+	out, err := apiClient.ContainerLogs(ctx, cID, client.ContainerLogsOptions{ShowStdout: true})
 	assert.NilError(t, err)
 	defer out.Close()
 
@@ -233,7 +236,7 @@ func TestRunWithAlternativeContainerdShim(t *testing.T) {
 
 	poll.WaitOn(t, container.IsStopped(ctx, apiClient, cID))
 
-	out, err := apiClient.ContainerLogs(ctx, cID, containertypes.LogsOptions{ShowStdout: true})
+	out, err := apiClient.ContainerLogs(ctx, cID, client.ContainerLogsOptions{ShowStdout: true})
 	assert.NilError(t, err)
 	defer out.Close()
 
@@ -253,7 +256,7 @@ func TestRunWithAlternativeContainerdShim(t *testing.T) {
 
 	poll.WaitOn(t, container.IsStopped(ctx, apiClient, cID))
 
-	out, err = apiClient.ContainerLogs(ctx, cID, containertypes.LogsOptions{ShowStdout: true})
+	out, err = apiClient.ContainerLogs(ctx, cID, client.ContainerLogsOptions{ShowStdout: true})
 	assert.NilError(t, err)
 	defer out.Close()
 
@@ -270,25 +273,30 @@ func TestMacAddressIsAppliedToMainNetworkWithShortID(t *testing.T) {
 
 	ctx := testutil.StartSpan(baseContext, t)
 
-	d := daemon.New(t)
+	d := daemon.New(t, daemon.WithEnvVars("DOCKER_MIN_API_VERSION=1.43"))
 	d.StartWithBusybox(ctx, t)
 	defer d.Stop(t)
 
-	apiClient, err := client.NewClientWithOpts(client.FromEnv, client.WithVersion("1.43"))
-	assert.NilError(t, err)
+	apiClient := d.NewClientT(t, client.WithVersion("1.43"))
 
 	n := net.CreateNoError(ctx, t, apiClient, "testnet", net.WithIPAM("192.168.101.0/24", "192.168.101.1"))
 
-	cid := container.Run(ctx, t, apiClient,
+	opts := []func(*container.TestContainerConfig){
 		container.WithImage("busybox:latest"),
 		container.WithCmd("/bin/sleep", "infinity"),
 		container.WithStopSignal("SIGKILL"),
 		container.WithNetworkMode(n[:10]),
-		container.WithContainerWideMacAddress("02:42:08:26:a9:55"))
-	defer container.Remove(ctx, t, apiClient, cid, containertypes.RemoveOptions{Force: true})
+	}
+
+	cid := createLegacyContainer(ctx, t, apiClient, "02:42:08:26:a9:55", opts...)
+	_, err := apiClient.ContainerStart(ctx, cid, client.ContainerStartOptions{})
+	assert.NilError(t, err)
+
+	defer container.Remove(ctx, t, apiClient, cid, client.ContainerRemoveOptions{Force: true})
 
 	c := container.Inspect(ctx, t, apiClient, cid)
-	assert.Equal(t, c.NetworkSettings.Networks["testnet"].MacAddress, "02:42:08:26:a9:55")
+	assert.Assert(t, c.NetworkSettings.Networks["testnet"] != nil)
+	assert.DeepEqual(t, c.NetworkSettings.Networks["testnet"].MacAddress, networktypes.HardwareAddr{0x02, 0x42, 0x08, 0x26, 0xa9, 0x55})
 }
 
 func TestStaticIPOutsideSubpool(t *testing.T) {
@@ -301,7 +309,7 @@ func TestStaticIPOutsideSubpool(t *testing.T) {
 	d.StartWithBusybox(ctx, t)
 	defer d.Stop(t)
 
-	apiClient, err := client.NewClientWithOpts(client.FromEnv, client.WithVersion("1.43"))
+	apiClient, err := client.New(client.FromEnv, client.WithVersion("1.43"))
 	assert.NilError(t, err)
 
 	const netname = "subnet-range"
@@ -317,7 +325,7 @@ func TestStaticIPOutsideSubpool(t *testing.T) {
 
 	poll.WaitOn(t, container.IsStopped(ctx, apiClient, cID))
 
-	out, err := apiClient.ContainerLogs(ctx, cID, containertypes.LogsOptions{ShowStdout: true})
+	out, err := apiClient.ContainerLogs(ctx, cID, client.ContainerLogsOptions{ShowStdout: true})
 	assert.NilError(t, err)
 	defer out.Close()
 
@@ -347,7 +355,7 @@ func TestWorkingDirNormalization(t *testing.T) {
 				container.WithWorkingDir(tc.workdir),
 			)
 
-			defer container.Remove(ctx, t, apiClient, cID, containertypes.RemoveOptions{Force: true})
+			defer container.Remove(ctx, t, apiClient, cID, client.ContainerRemoveOptions{Force: true})
 
 			inspect := container.Inspect(ctx, t, apiClient, cID)
 
@@ -425,13 +433,13 @@ func TestCgroupRW(t *testing.T) {
 		},
 		{
 			name: "writable",
-			ops:  []func(*container.TestContainerConfig){container.WithSecurityOpt("writable-cgroups")},
+			ops:  []func(*container.TestContainerConfig){container.WithSecurityOpt("writable-cgroups"), container.WithSecurityOpt("label=disable")},
 			// no err msg, because this is correct key=bool
 			expectedExitCode: 0,
 		},
 		{
 			name: "writable=true",
-			ops:  []func(*container.TestContainerConfig){container.WithSecurityOpt("writable-cgroups=true")},
+			ops:  []func(*container.TestContainerConfig){container.WithSecurityOpt("writable-cgroups=true"), container.WithSecurityOpt("label=disable")},
 			// no err msg, because this is correct key=value
 			expectedExitCode: 0,
 		},
@@ -448,7 +456,7 @@ func TestCgroupRW(t *testing.T) {
 		},
 		{
 			name:           "writable=1",
-			ops:            []func(*container.TestContainerConfig){container.WithSecurityOpt("writable-cgroups=1")},
+			ops:            []func(*container.TestContainerConfig){container.WithSecurityOpt("writable-cgroups=1"), container.WithSecurityOpt("label=disable")},
 			expectedErrMsg: `Error response from daemon: invalid --security-opt 2: "writable-cgroups=1"`,
 		},
 		{
@@ -466,7 +474,7 @@ func TestCgroupRW(t *testing.T) {
 				return
 			}
 			// TODO check if ro or not
-			err = apiClient.ContainerStart(ctx, resp.ID, containertypes.StartOptions{})
+			_, err = apiClient.ContainerStart(ctx, resp.ID, client.ContainerStartOptions{})
 			assert.NilError(t, err)
 
 			res, err := container.Exec(ctx, apiClient, resp.ID, []string{"sh", "-ec", `
@@ -548,7 +556,7 @@ func TestContainerShmSize(t *testing.T) {
 			)
 
 			t.Cleanup(func() {
-				container.Remove(ctx, t, apiClient, cID, containertypes.RemoveOptions{})
+				container.Remove(ctx, t, apiClient, cID, client.ContainerRemoveOptions{})
 			})
 
 			expectedSize, err := units.RAMInBytes(tc.expSize)
@@ -565,4 +573,37 @@ func TestContainerShmSize(t *testing.T) {
 			assert.Check(t, is.Contains(out.Stdout, "size="+tc.expSize))
 		})
 	}
+}
+
+type legacyCreateRequest struct {
+	containertypes.CreateRequest
+	// Mac Address of the container.
+	//
+	// MacAddress field is deprecated since API v1.44. Use EndpointSettings.MacAddress instead.
+	MacAddress string `json:",omitempty"`
+}
+
+func createLegacyContainer(ctx context.Context, t *testing.T, apiClient client.APIClient, desiredMAC string, ops ...func(*container.TestContainerConfig)) string {
+	t.Helper()
+	config := container.NewTestConfig(ops...)
+	ep := "/v" + apiClient.ClientVersion() + "/containers/create"
+	if config.Name != "" {
+		ep += "?name=" + config.Name
+	}
+	res, _, err := request.Post(ctx, ep, request.Host(apiClient.DaemonHost()), request.JSONBody(&legacyCreateRequest{
+		CreateRequest: containertypes.CreateRequest{
+			Config:           config.Config,
+			HostConfig:       config.HostConfig,
+			NetworkingConfig: config.NetworkingConfig,
+		},
+		MacAddress: desiredMAC,
+	}))
+	assert.NilError(t, err)
+	buf, err := request.ReadBody(res.Body)
+	assert.NilError(t, err)
+	assert.Equal(t, res.StatusCode, http.StatusCreated, string(buf))
+	var resp containertypes.CreateResponse
+	err = json.Unmarshal(buf, &resp)
+	assert.NilError(t, err)
+	return resp.ID
 }

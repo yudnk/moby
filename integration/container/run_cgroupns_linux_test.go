@@ -7,8 +7,8 @@ import (
 	"github.com/moby/moby/client"
 	"github.com/moby/moby/v2/integration/internal/container"
 	"github.com/moby/moby/v2/integration/internal/requirement"
-	"github.com/moby/moby/v2/testutil"
-	"github.com/moby/moby/v2/testutil/daemon"
+	"github.com/moby/moby/v2/internal/testutil"
+	"github.com/moby/moby/v2/internal/testutil/daemon"
 	"gotest.tools/v3/assert"
 	"gotest.tools/v3/skip"
 )
@@ -138,7 +138,7 @@ func TestCgroupNamespacesRunOlderClient(t *testing.T) {
 
 	ctx := testutil.StartSpan(baseContext, t)
 
-	d := daemon.New(t, daemon.WithDefaultCgroupNamespaceMode("private"))
+	d := daemon.New(t, daemon.WithEnvVars("DOCKER_MIN_API_VERSION=1.39"), daemon.WithDefaultCgroupNamespaceMode("private"))
 	apiClient := d.NewClientT(t, client.WithVersion("1.39"))
 
 	d.StartWithBusybox(ctx, t)

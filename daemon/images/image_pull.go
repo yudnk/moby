@@ -10,23 +10,33 @@ import (
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/containerd/log"
 	"github.com/distribution/reference"
-	"github.com/moby/moby/api/pkg/progress"
-	"github.com/moby/moby/api/pkg/streamformatter"
 	"github.com/moby/moby/api/types/registry"
 	"github.com/moby/moby/v2/daemon/internal/distribution"
 	progressutils "github.com/moby/moby/v2/daemon/internal/distribution/utils"
 	"github.com/moby/moby/v2/daemon/internal/metrics"
-	"github.com/moby/moby/v2/daemon/server/backend"
+	"github.com/moby/moby/v2/daemon/internal/progress"
+	"github.com/moby/moby/v2/daemon/internal/streamformatter"
+	"github.com/moby/moby/v2/daemon/server/imagebackend"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/pkg/errors"
 )
 
 // PullImage initiates a pull operation. image is the repository name to pull, and
 // tag may be either empty, or indicate a specific tag to pull.
-func (i *ImageService) PullImage(ctx context.Context, ref reference.Named, platform *ocispec.Platform, metaHeaders map[string][]string, authConfig *registry.AuthConfig, outStream io.Writer) error {
+func (i *ImageService) PullImage(ctx context.Context, ref reference.Named, options imagebackend.PullOptions) error {
+	if len(options.Platforms) > 1 {
+		// TODO(thaJeztah): add support for pulling multiple platforms
+		return cerrdefs.ErrInvalidArgument.WithMessage("multiple platforms is not supported")
+	}
 	start := time.Now()
 
-	err := i.pullImageWithReference(ctx, ref, platform, metaHeaders, authConfig, outStream)
+	var platform *ocispec.Platform
+	if len(options.Platforms) > 0 {
+		p := options.Platforms[0]
+		platform = &p
+	}
+
+	err := i.pullImageWithReference(ctx, ref, platform, options.MetaHeaders, options.AuthConfig, options.OutStream)
 	metrics.ImageActions.WithValues("pull").UpdateSince(start)
 	if err != nil {
 		return err
@@ -39,12 +49,12 @@ func (i *ImageService) PullImage(ctx context.Context, ref reference.Named, platf
 		// we allow the image to have a non-matching architecture. The code
 		// below checks for this situation, and returns a warning to the client,
 		// as well as logging it to the daemon logs.
-		img, err := i.GetImage(ctx, ref.String(), backend.GetImageOpts{Platform: platform})
+		img, err := i.GetImage(ctx, ref.String(), imagebackend.GetImageOpts{Platform: platform})
 
 		// Note that this is a special case where GetImage returns both an image
 		// and an error: https://github.com/moby/moby/blob/v28.3.3/daemon/images/image.go#L186-L193
 		if cerrdefs.IsNotFound(err) && img != nil {
-			po := streamformatter.NewJSONProgressOutput(outStream, false)
+			po := streamformatter.NewJSONProgressOutput(options.OutStream, false)
 			progress.Messagef(po, "", `WARNING: %s`, err.Error())
 			log.G(ctx).WithError(err).WithField("image", reference.FamiliarName(ref)).Warn("ignoring platform mismatch on single-arch image")
 		} else if err != nil {

@@ -2,14 +2,12 @@ package executor
 
 import (
 	"context"
-	"io"
 	"time"
 
 	"github.com/distribution/reference"
 	"github.com/docker/distribution"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/events"
-	"github.com/moby/moby/api/types/filters"
 	"github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/api/types/registry"
 	"github.com/moby/moby/api/types/swarm"
@@ -17,6 +15,7 @@ import (
 	"github.com/moby/moby/api/types/volume"
 	clustertypes "github.com/moby/moby/v2/daemon/cluster/provider"
 	containerpkg "github.com/moby/moby/v2/daemon/container"
+	"github.com/moby/moby/v2/daemon/internal/filters"
 	"github.com/moby/moby/v2/daemon/internal/image"
 	"github.com/moby/moby/v2/daemon/libnetwork"
 	"github.com/moby/moby/v2/daemon/libnetwork/cluster"
@@ -24,9 +23,9 @@ import (
 	networkSettings "github.com/moby/moby/v2/daemon/network"
 	"github.com/moby/moby/v2/daemon/pkg/plugin"
 	"github.com/moby/moby/v2/daemon/server/backend"
+	"github.com/moby/moby/v2/daemon/server/imagebackend"
 	volumeopts "github.com/moby/moby/v2/daemon/volume/service/opts"
 	"github.com/moby/swarmkit/v2/agent/exec"
-	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
 // Backend defines the executor component for a swarm agent.
@@ -38,13 +37,13 @@ type Backend interface {
 	ReleaseIngress() (<-chan struct{}, error)
 	CreateManagedContainer(ctx context.Context, config backend.ContainerCreateConfig) (container.CreateResponse, error)
 	ContainerStart(ctx context.Context, name string, checkpoint string, checkpointDir string) error
-	ContainerStop(ctx context.Context, name string, config container.StopOptions) error
-	ContainerLogs(ctx context.Context, name string, config *container.LogsOptions) (msgs <-chan *backend.LogMessage, tty bool, err error)
+	ContainerStop(ctx context.Context, name string, config backend.ContainerStopOptions) error
+	ContainerLogs(ctx context.Context, name string, config *backend.ContainerLogsOptions) (msgs <-chan *backend.LogMessage, tty bool, err error)
 	ConnectContainerToNetwork(ctx context.Context, containerName, networkName string, endpointConfig *network.EndpointSettings) error
 	ActivateContainerServiceBinding(containerName string) error
 	DeactivateContainerServiceBinding(containerName string) error
 	UpdateContainerServiceConfig(containerName string, serviceConfig *clustertypes.ServiceConfig) error
-	ContainerInspect(ctx context.Context, name string, options backend.ContainerInspectOptions) (*container.InspectResponse, error)
+	ContainerInspect(ctx context.Context, name string, options backend.ContainerInspectOptions) (_ *container.InspectResponse, desiredMACAddress network.HardwareAddr, _ error)
 	ContainerWait(ctx context.Context, name string, condition container.WaitCondition) (<-chan containerpkg.StateStatus, error)
 	ContainerRm(name string, config *backend.ContainerRmConfig) error
 	ContainerKill(name string, sig string) error
@@ -52,7 +51,7 @@ type Backend interface {
 	SetContainerSecretReferences(name string, refs []*swarm.SecretReference) error
 	SetContainerConfigReferences(name string, refs []*swarm.ConfigReference) error
 	SystemInfo(context.Context) (*system.Info, error)
-	Containers(ctx context.Context, config *container.ListOptions) ([]*container.Summary, error)
+	Containers(ctx context.Context, config *backend.ContainerListOptions) ([]*container.Summary, error)
 	SetNetworkBootstrapKeys([]*networktypes.EncryptionKey) error
 	DaemonJoinsCluster(provider cluster.Provider)
 	DaemonLeavesCluster()
@@ -74,7 +73,7 @@ type VolumeBackend interface {
 
 // ImageBackend is used by an executor to perform image operations
 type ImageBackend interface {
-	PullImage(ctx context.Context, ref reference.Named, platform *ocispec.Platform, metaHeaders map[string][]string, authConfig *registry.AuthConfig, outStream io.Writer) error
+	PullImage(ctx context.Context, ref reference.Named, options imagebackend.PullOptions) error
 	GetRepositories(context.Context, reference.Named, *registry.AuthConfig) ([]distribution.Repository, error)
-	GetImage(ctx context.Context, refOrID string, options backend.GetImageOpts) (*image.Image, error)
+	GetImage(ctx context.Context, refOrID string, options imagebackend.GetImageOpts) (*image.Image, error)
 }

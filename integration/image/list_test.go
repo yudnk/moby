@@ -8,17 +8,13 @@ import (
 	"time"
 
 	"github.com/google/go-cmp/cmp/cmpopts"
-	"github.com/moby/moby/api"
-	containertypes "github.com/moby/moby/api/types/container"
-	"github.com/moby/moby/api/types/filters"
 	"github.com/moby/moby/api/types/image"
-	"github.com/moby/moby/api/types/versions"
 	"github.com/moby/moby/client"
 	"github.com/moby/moby/v2/integration/internal/container"
 	iimage "github.com/moby/moby/v2/integration/internal/image"
-	"github.com/moby/moby/v2/internal/testutils/specialimage"
-	"github.com/moby/moby/v2/testutil"
-	"github.com/moby/moby/v2/testutil/daemon"
+	"github.com/moby/moby/v2/internal/testutil"
+	"github.com/moby/moby/v2/internal/testutil/daemon"
+	"github.com/moby/moby/v2/internal/testutil/specialimage"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
@@ -40,23 +36,19 @@ func TestImagesFilterMultiReference(t *testing.T) {
 	}
 
 	for _, repoTag := range repoTags {
-		err := apiClient.ImageTag(ctx, "busybox:latest", repoTag)
+		_, err := apiClient.ImageTag(ctx, client.ImageTagOptions{Source: "busybox:latest", Target: repoTag})
 		assert.NilError(t, err)
 	}
 
-	filter := filters.NewArgs()
-	filter.Add("reference", repoTags[0])
-	filter.Add("reference", repoTags[1])
-	filter.Add("reference", repoTags[2])
-	options := image.ListOptions{
-		Filters: filter,
+	options := client.ImageListOptions{
+		Filters: make(client.Filters).Add("reference", repoTags[:3]...),
 	}
-	images, err := apiClient.ImageList(ctx, options)
+	imageList, err := apiClient.ImageList(ctx, options)
 	assert.NilError(t, err)
 
-	assert.Assert(t, is.Len(images, 1))
-	assert.Check(t, is.Len(images[0].RepoTags, 3))
-	for _, repoTag := range images[0].RepoTags {
+	assert.Assert(t, is.Len(imageList.Items, 1))
+	assert.Check(t, is.Len(imageList.Items[0].RepoTags, 3))
+	for _, repoTag := range imageList.Items[0].RepoTags {
 		if repoTag != repoTags[0] && repoTag != repoTags[1] && repoTag != repoTags[2] {
 			t.Errorf("list images doesn't match any repoTag we expected, repoTag: %s", repoTag)
 		}
@@ -77,7 +69,7 @@ func TestImagesFilterUntil(t *testing.T) {
 			// Make sure each image has a distinct timestamp.
 			time.Sleep(time.Millisecond)
 		}
-		id, err := apiClient.ContainerCommit(ctx, ctr, containertypes.CommitOptions{Reference: fmt.Sprintf("%s:v%d", name, i)})
+		id, err := apiClient.ContainerCommit(ctx, ctr, client.ContainerCommitOptions{Reference: fmt.Sprintf("%s:v%d", name, i)})
 		assert.NilError(t, err)
 		imgs[i] = id.ID
 	}
@@ -90,17 +82,16 @@ func TestImagesFilterUntil(t *testing.T) {
 	assert.NilError(t, err)
 	laterUntil := laterImage.Created
 
-	filter := filters.NewArgs(
-		filters.Arg("since", imgs[0]),
-		filters.Arg("until", olderUntil),
-		filters.Arg("until", laterUntil),
-		filters.Arg("before", imgs[len(imgs)-1]),
-	)
-	list, err := apiClient.ImageList(ctx, image.ListOptions{Filters: filter})
+	filter := make(client.Filters).
+		Add("since", imgs[0]).
+		Add("until", olderUntil).
+		Add("until", laterUntil).
+		Add("before", imgs[len(imgs)-1])
+	list, err := apiClient.ImageList(ctx, client.ImageListOptions{Filters: filter})
 	assert.NilError(t, err)
 
 	var listedIDs []string
-	for _, i := range list {
+	for _, i := range list.Items {
 		t.Logf("ImageList: ID=%v RepoTags=%v", i.ID, i.RepoTags)
 		listedIDs = append(listedIDs, i.ID)
 	}
@@ -121,20 +112,19 @@ func TestImagesFilterBeforeSince(t *testing.T) {
 			// Make sure each image has a distinct timestamp.
 			time.Sleep(time.Millisecond)
 		}
-		id, err := apiClient.ContainerCommit(ctx, ctr, containertypes.CommitOptions{Reference: fmt.Sprintf("%s:v%d", name, i)})
+		id, err := apiClient.ContainerCommit(ctx, ctr, client.ContainerCommitOptions{Reference: fmt.Sprintf("%s:v%d", name, i)})
 		assert.NilError(t, err)
 		imgs[i] = id.ID
 	}
 
-	filter := filters.NewArgs(
-		filters.Arg("since", imgs[0]),
-		filters.Arg("before", imgs[len(imgs)-1]),
-	)
-	list, err := apiClient.ImageList(ctx, image.ListOptions{Filters: filter})
+	filter := make(client.Filters).
+		Add("since", imgs[0]).
+		Add("before", imgs[len(imgs)-1])
+	list, err := apiClient.ImageList(ctx, client.ImageListOptions{Filters: filter})
 	assert.NilError(t, err)
 
 	var listedIDs []string
-	for _, i := range list {
+	for _, i := range list.Items {
 		t.Logf("ImageList: ID=%v RepoTags=%v", i.ID, i.RepoTags)
 		listedIDs = append(listedIDs, i.ID)
 	}
@@ -150,37 +140,37 @@ func TestAPIImagesFilters(t *testing.T) {
 	apiClient := testEnv.APIClient()
 
 	for _, n := range []string{"utest:tag1", "utest/docker:tag2", "utest:5000/docker:tag3"} {
-		err := apiClient.ImageTag(ctx, "busybox:latest", n)
+		_, err := apiClient.ImageTag(ctx, client.ImageTagOptions{Source: "busybox:latest", Target: n})
 		assert.NilError(t, err)
 	}
 
 	testcases := []struct {
 		name             string
-		filters          []filters.KeyValuePair
+		filters          client.Filters
 		expectedImages   int
 		expectedRepoTags int
 	}{
 		{
 			name:             "repository regex",
-			filters:          []filters.KeyValuePair{filters.Arg("reference", "utest*/*")},
+			filters:          make(client.Filters).Add("reference", "utest*/*"),
 			expectedImages:   1,
 			expectedRepoTags: 2,
 		},
 		{
 			name:             "image name regex",
-			filters:          []filters.KeyValuePair{filters.Arg("reference", "utest*")},
+			filters:          make(client.Filters).Add("reference", "utest*"),
 			expectedImages:   1,
 			expectedRepoTags: 1,
 		},
 		{
 			name:             "image name without a tag",
-			filters:          []filters.KeyValuePair{filters.Arg("reference", "utest")},
+			filters:          make(client.Filters).Add("reference", "utest"),
 			expectedImages:   1,
 			expectedRepoTags: 1,
 		},
 		{
 			name:             "registry port regex",
-			filters:          []filters.KeyValuePair{filters.Arg("reference", "*5000*/*")},
+			filters:          make(client.Filters).Add("reference", "*5000*/*"),
 			expectedImages:   1,
 			expectedRepoTags: 1,
 		},
@@ -191,12 +181,12 @@ func TestAPIImagesFilters(t *testing.T) {
 			t.Parallel()
 
 			ctx := testutil.StartSpan(ctx, t)
-			images, err := apiClient.ImageList(ctx, image.ListOptions{
-				Filters: filters.NewArgs(tc.filters...),
+			imageList, err := apiClient.ImageList(ctx, client.ImageListOptions{
+				Filters: tc.filters,
 			})
 			assert.Check(t, err)
-			assert.Assert(t, is.Len(images, tc.expectedImages))
-			assert.Check(t, is.Len(images[0].RepoTags, tc.expectedRepoTags))
+			assert.Assert(t, is.Len(imageList.Items, tc.expectedImages))
+			assert.Check(t, is.Len(imageList.Items[0].RepoTags, tc.expectedRepoTags))
 		})
 	}
 }
@@ -228,7 +218,7 @@ func TestAPIImagesListSizeShared(t *testing.T) {
 		})
 	})
 
-	_, err := apiClient.ImageList(ctx, image.ListOptions{SharedSize: true})
+	_, err := apiClient.ImageList(ctx, client.ImageListOptions{SharedSize: true})
 	assert.NilError(t, err)
 }
 
@@ -262,36 +252,34 @@ func TestAPIImagesListManifests(t *testing.T) {
 		container.WithPlatform(&containerPlatform))
 
 	t.Run("unsupported before 1.47", func(t *testing.T) {
-		// TODO: Remove when MinSupportedAPIVersion >= 1.47
-		c := d.NewClientT(t, client.WithVersion(api.MinSupportedAPIVersion))
+		// TODO: Remove when MinAPIVersion >= 1.47
+		c := d.NewClientT(t, client.WithVersion("1.46"))
 
-		images, err := c.ImageList(ctx, image.ListOptions{Manifests: true})
+		imageList, err := c.ImageList(ctx, client.ImageListOptions{Manifests: true})
 		assert.NilError(t, err)
 
-		assert.Assert(t, is.Len(images, 1))
-		assert.Check(t, is.Nil(images[0].Manifests))
+		assert.Assert(t, is.Len(imageList.Items, 1))
+		assert.Check(t, is.Nil(imageList.Items[0].Manifests))
 	})
-
-	skip.If(t, versions.LessThan(testEnv.DaemonAPIVersion(), "1.47"))
 
 	api147 := d.NewClientT(t, client.WithVersion("1.47"))
 
 	t.Run("no manifests if not requested", func(t *testing.T) {
-		images, err := api147.ImageList(ctx, image.ListOptions{})
+		imageList, err := api147.ImageList(ctx, client.ImageListOptions{})
 		assert.NilError(t, err)
 
-		assert.Assert(t, is.Len(images, 1))
-		assert.Check(t, is.Nil(images[0].Manifests))
+		assert.Assert(t, is.Len(imageList.Items, 1))
+		assert.Check(t, is.Nil(imageList.Items[0].Manifests))
 	})
 
-	images, err := api147.ImageList(ctx, image.ListOptions{Manifests: true})
+	imageList, err := api147.ImageList(ctx, client.ImageListOptions{Manifests: true})
 	assert.NilError(t, err)
 
-	assert.Check(t, is.Len(images, 1))
-	assert.Check(t, images[0].Manifests != nil)
-	assert.Check(t, is.Len(images[0].Manifests, 3))
+	assert.Check(t, is.Len(imageList.Items, 1))
+	assert.Check(t, imageList.Items[0].Manifests != nil)
+	assert.Check(t, is.Len(imageList.Items[0].Manifests, 3))
 
-	for _, mfst := range images[0].Manifests {
+	for _, mfst := range imageList.Items[0].Manifests {
 		// All manifests should be image manifests
 		assert.Check(t, is.Equal(mfst.Kind, image.ManifestKindImage))
 

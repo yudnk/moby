@@ -20,13 +20,13 @@ import (
 	"github.com/cloudflare/cfssl/initca"
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/moby/moby/api/types/container"
-	"github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/api/types/swarm"
+	"github.com/moby/moby/client"
 	"github.com/moby/moby/v2/integration-cli/checker"
 	"github.com/moby/moby/v2/integration-cli/daemon"
-	"github.com/moby/moby/v2/testutil"
-	testdaemon "github.com/moby/moby/v2/testutil/daemon"
-	"github.com/moby/moby/v2/testutil/request"
+	"github.com/moby/moby/v2/internal/testutil"
+	testdaemon "github.com/moby/moby/v2/internal/testutil/daemon"
+	"github.com/moby/moby/v2/internal/testutil/request"
 	"github.com/moby/swarmkit/v2/ca"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
@@ -91,7 +91,7 @@ func (s *DockerSwarmSuite) TestAPISwarmJoinToken(c *testing.T) {
 
 	d2 := s.AddDaemon(ctx, c, false, false)
 	c2 := d2.NewClientT(c)
-	err := c2.SwarmJoin(testutil.GetContext(c), swarm.JoinRequest{
+	_, err := c2.SwarmJoin(testutil.GetContext(c), client.SwarmJoinOptions{
 		ListenAddr:  d2.SwarmListenAddr(),
 		RemoteAddrs: []string{d1.SwarmListenAddr()},
 	})
@@ -99,7 +99,7 @@ func (s *DockerSwarmSuite) TestAPISwarmJoinToken(c *testing.T) {
 	info := d2.SwarmInfo(ctx, c)
 	assert.Equal(c, info.LocalNodeState, swarm.LocalNodeStateInactive)
 
-	err = c2.SwarmJoin(testutil.GetContext(c), swarm.JoinRequest{
+	_, err = c2.SwarmJoin(testutil.GetContext(c), client.SwarmJoinOptions{
 		ListenAddr:  d2.SwarmListenAddr(),
 		JoinToken:   "foobaz",
 		RemoteAddrs: []string{d1.SwarmListenAddr()},
@@ -124,7 +124,7 @@ func (s *DockerSwarmSuite) TestAPISwarmJoinToken(c *testing.T) {
 	// change tokens
 	d1.RotateTokens(c)
 
-	err = c2.SwarmJoin(testutil.GetContext(c), swarm.JoinRequest{
+	_, err = c2.SwarmJoin(testutil.GetContext(c), client.SwarmJoinOptions{
 		ListenAddr:  d2.SwarmListenAddr(),
 		JoinToken:   workerToken,
 		RemoteAddrs: []string{d1.SwarmListenAddr()},
@@ -145,7 +145,7 @@ func (s *DockerSwarmSuite) TestAPISwarmJoinToken(c *testing.T) {
 	// change spec, don't change tokens
 	d1.UpdateSwarm(c, func(s *swarm.Spec) {})
 
-	err = c2.SwarmJoin(testutil.GetContext(c), swarm.JoinRequest{
+	_, err = c2.SwarmJoin(testutil.GetContext(c), client.SwarmJoinOptions{
 		ListenAddr:  d2.SwarmListenAddr(),
 		RemoteAddrs: []string{d1.SwarmListenAddr()},
 	})
@@ -192,7 +192,7 @@ func (s *DockerSwarmSuite) TestAPISwarmCAHash(c *testing.T) {
 	splitToken[2] = "1kxftv4ofnc6mt30lmgipg6ngf9luhwqopfk1tz6bdmnkubg0e"
 	replacementToken := strings.Join(splitToken, "-")
 	c2 := d2.NewClientT(c)
-	err := c2.SwarmJoin(testutil.GetContext(c), swarm.JoinRequest{
+	_, err := c2.SwarmJoin(testutil.GetContext(c), client.SwarmJoinOptions{
 		ListenAddr:  d2.SwarmListenAddr(),
 		JoinToken:   replacementToken,
 		RemoteAddrs: []string{d1.SwarmListenAddr()},
@@ -413,7 +413,9 @@ func (s *DockerSwarmSuite) TestAPISwarmRaftQuorum(c *testing.T) {
 
 	// d1 will eventually step down from leader because there is no longer an active quorum, wait for that to happen
 	poll.WaitOn(c, pollCheck(c, func(t *testing.T) (any, string) {
-		_, err := cli.ServiceCreate(testutil.GetContext(t), service.Spec, swarm.ServiceCreateOptions{})
+		_, err := cli.ServiceCreate(testutil.GetContext(t), client.ServiceCreateOptions{
+			Spec: service.Spec,
+		})
 		return err.Error(), ""
 	}, checker.Contains("Make sure more than half of the managers are online.")), poll.WithTimeout(defaultReconciliationTimeout*2))
 
@@ -463,7 +465,7 @@ func (s *DockerSwarmSuite) TestAPISwarmLeaveOnPendingJoin(c *testing.T) {
 	id = strings.TrimSpace(id)
 
 	c2 := d2.NewClientT(c)
-	err = c2.SwarmJoin(testutil.GetContext(c), swarm.JoinRequest{
+	_, err = c2.SwarmJoin(testutil.GetContext(c), client.SwarmJoinOptions{
 		ListenAddr:  d2.SwarmListenAddr(),
 		RemoteAddrs: []string{"123.123.123.123:1234"},
 	})
@@ -487,8 +489,8 @@ func (s *DockerSwarmSuite) TestAPISwarmRestoreOnPendingJoin(c *testing.T) {
 
 	ctx := testutil.GetContext(c)
 	d := s.AddDaemon(ctx, c, false, false)
-	client := d.NewClientT(c)
-	err := client.SwarmJoin(testutil.GetContext(c), swarm.JoinRequest{
+	cli := d.NewClientT(c)
+	_, err := cli.SwarmJoin(testutil.GetContext(c), client.SwarmJoinOptions{
 		ListenAddr:  d.SwarmListenAddr(),
 		RemoteAddrs: []string{"123.123.123.123:1234"},
 	})
@@ -754,9 +756,9 @@ func checkClusterHealth(t *testing.T, cl []*daemon.Daemon, managerCount, workerC
 
 		// check info in a poll.WaitOn(), because if the cluster doesn't have a leader, `info` will return an error
 		checkInfo := func(t *testing.T) (any, string) {
-			client := d.NewClientT(t)
-			daemonInfo, err := client.Info(ctx)
-			info = daemonInfo.Swarm
+			apiClient := d.NewClientT(t)
+			result, err := apiClient.Info(ctx, client.InfoOptions{})
+			info = result.Info.Swarm
 			return err, "cluster not ready in time"
 		}
 		poll.WaitOn(t, pollCheck(t, checkInfo, checker.IsNil()), poll.WithTimeout(defaultReconciliationTimeout))
@@ -889,7 +891,10 @@ func (s *DockerSwarmSuite) TestAPISwarmServicesUpdateWithName(c *testing.T) {
 	setInstances(instances)(service)
 	cli := d.NewClientT(c)
 	defer cli.Close()
-	_, err := cli.ServiceUpdate(ctx, service.Spec.Name, service.Version, service.Spec, swarm.ServiceUpdateOptions{})
+	_, err := cli.ServiceUpdate(ctx, service.Spec.Name, client.ServiceUpdateOptions{
+		Version: service.Version,
+		Spec:    service.Spec,
+	})
 	assert.NilError(c, err)
 	poll.WaitOn(c, pollCheck(c, d.CheckActiveContainerCount(ctx), checker.Equals(instances)), poll.WithTimeout(defaultReconciliationTimeout))
 }
@@ -909,8 +914,8 @@ func (s *DockerSwarmSuite) TestAPISwarmErrorHandling(c *testing.T) {
 	assert.NilError(c, err)
 	defer ln.Close()
 	d := s.AddDaemon(ctx, c, false, false)
-	client := d.NewClientT(c)
-	_, err = client.SwarmInit(testutil.GetContext(c), swarm.InitRequest{
+	cli := d.NewClientT(c)
+	_, err = cli.SwarmInit(testutil.GetContext(c), client.SwarmInitOptions{
 		ListenAddr: d.SwarmListenAddr(),
 	})
 	assert.ErrorContains(c, err, "address already in use")
@@ -1022,14 +1027,14 @@ func (s *DockerSwarmSuite) TestAPINetworkInspectWithScope(c *testing.T) {
 	name := "test-scoped-network"
 	apiclient := d.NewClientT(c)
 
-	resp, err := apiclient.NetworkCreate(ctx, name, network.CreateOptions{Driver: "overlay"})
+	create, err := apiclient.NetworkCreate(ctx, name, client.NetworkCreateOptions{Driver: "overlay"})
 	assert.NilError(c, err)
 
-	nw, err := apiclient.NetworkInspect(ctx, name, network.InspectOptions{})
+	inspect, err := apiclient.NetworkInspect(ctx, name, client.NetworkInspectOptions{})
 	assert.NilError(c, err)
-	assert.Check(c, is.Equal("swarm", nw.Scope))
-	assert.Check(c, is.Equal(resp.ID, nw.ID))
+	assert.Check(c, is.Equal("swarm", inspect.Network.Scope))
+	assert.Check(c, is.Equal(create.ID, inspect.Network.ID))
 
-	_, err = apiclient.NetworkInspect(ctx, name, network.InspectOptions{Scope: "local"})
+	_, err = apiclient.NetworkInspect(ctx, name, client.NetworkInspectOptions{Scope: "local"})
 	assert.Check(c, is.ErrorType(err, cerrdefs.IsNotFound))
 }

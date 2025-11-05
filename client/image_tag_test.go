@@ -1,13 +1,10 @@
 package client
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"io"
 	"math/rand"
 	"net/http"
-	"strings"
 	"testing"
 
 	cerrdefs "github.com/containerd/errdefs"
@@ -16,22 +13,20 @@ import (
 )
 
 func TestImageTagError(t *testing.T) {
-	client := &Client{
-		client: newMockClient(errorMock(http.StatusInternalServerError, "Server error")),
-	}
+	client, err := New(WithMockClient(errorMock(http.StatusInternalServerError, "Server error")))
+	assert.NilError(t, err)
 
-	err := client.ImageTag(context.Background(), "image_id", "repo:tag")
+	_, err = client.ImageTag(context.Background(), ImageTagOptions{Source: "image_id", Target: "repo:tag"})
 	assert.Check(t, is.ErrorType(err, cerrdefs.IsInternal))
 }
 
 // Note: this is not testing all the InvalidReference as it's the responsibility
 // of distribution/reference package.
 func TestImageTagInvalidReference(t *testing.T) {
-	client := &Client{
-		client: newMockClient(errorMock(http.StatusInternalServerError, "Server error")),
-	}
+	client, err := New(WithMockClient(errorMock(http.StatusInternalServerError, "Server error")))
+	assert.NilError(t, err)
 
-	err := client.ImageTag(context.Background(), "image_id", "aa/asdf$$^/aa")
+	_, err = client.ImageTag(context.Background(), ImageTagOptions{Source: "image_id", Target: "aa/asdf$$^/aa"})
 	assert.Check(t, is.Error(err, `error parsing reference: "aa/asdf$$^/aa" is not a valid repository/tag: invalid reference format`))
 }
 
@@ -39,15 +34,14 @@ func TestImageTagInvalidReference(t *testing.T) {
 func TestImageTagInvalidSourceImageName(t *testing.T) {
 	ctx := context.Background()
 
-	client := &Client{
-		client: newMockClient(errorMock(http.StatusInternalServerError, "client should not have made an API call")),
-	}
+	client, err := New(WithMockClient(errorMock(http.StatusInternalServerError, "client should not have made an API call")))
+	assert.NilError(t, err)
 
 	invalidRepos := []string{"fo$z$", "Foo@3cc", "Foo$3", "Foo*3", "Fo^3", "Foo!3", "F)xcz(", "fo%asd", "aa/asdf$$^/aa"}
 	for _, repo := range invalidRepos {
 		t.Run("invalidRepo/"+repo, func(t *testing.T) {
 			t.Parallel()
-			err := client.ImageTag(ctx, "busybox", repo)
+			_, err := client.ImageTag(ctx, ImageTagOptions{Source: "busybox", Target: repo})
 			assert.Check(t, is.ErrorContains(err, "not a valid repository/tag"))
 		})
 	}
@@ -57,26 +51,26 @@ func TestImageTagInvalidSourceImageName(t *testing.T) {
 	for _, repotag := range invalidTags {
 		t.Run("invalidTag/"+repotag, func(t *testing.T) {
 			t.Parallel()
-			err := client.ImageTag(ctx, "busybox", repotag)
+			_, err := client.ImageTag(ctx, ImageTagOptions{Source: "busybox", Target: repotag})
 			assert.Check(t, is.ErrorContains(err, "not a valid repository/tag"))
 		})
 	}
 
 	t.Run("test repository name begin with '-'", func(t *testing.T) {
 		t.Parallel()
-		err := client.ImageTag(ctx, "busybox:latest", "-busybox:test")
+		_, err := client.ImageTag(ctx, ImageTagOptions{Source: "busybox:latest", Target: "-busybox:test"})
 		assert.Check(t, is.ErrorContains(err, "error parsing reference"))
 	})
 
 	t.Run("test namespace name begin with '-'", func(t *testing.T) {
 		t.Parallel()
-		err := client.ImageTag(ctx, "busybox:latest", "-test/busybox:test")
+		_, err := client.ImageTag(ctx, ImageTagOptions{Source: "busybox:latest", Target: "-test/busybox:test"})
 		assert.Check(t, is.ErrorContains(err, "error parsing reference"))
 	})
 
 	t.Run("test index name begin with '-'", func(t *testing.T) {
 		t.Parallel()
-		err := client.ImageTag(ctx, "busybox:latest", "-index:5000/busybox:test")
+		_, err := client.ImageTag(ctx, ImageTagOptions{Source: "busybox:latest", Target: "-index:5000/busybox:test"})
 		assert.Check(t, is.ErrorContains(err, "error parsing reference"))
 	})
 }
@@ -92,11 +86,10 @@ func generateRandomAlphaOnlyString(n int) string {
 }
 
 func TestImageTagHexSource(t *testing.T) {
-	client := &Client{
-		client: newMockClient(errorMock(http.StatusOK, "OK")),
-	}
+	client, err := New(WithMockClient(mockResponse(http.StatusOK, nil, "OK")))
+	assert.NilError(t, err)
 
-	err := client.ImageTag(context.Background(), "0d409d33b27e47423b049f7f863faa08655a8c901749c2b25b93ca67d01a470d", "repo:tag")
+	_, err = client.ImageTag(context.Background(), ImageTagOptions{Source: "0d409d33b27e47423b049f7f863faa08655a8c901749c2b25b93ca67d01a470d", Target: "repo:tag"})
 	assert.NilError(t, err)
 }
 
@@ -157,28 +150,21 @@ func TestImageTag(t *testing.T) {
 		},
 	}
 	for _, tagCase := range tagCases {
-		client := &Client{
-			client: newMockClient(func(req *http.Request) (*http.Response, error) {
-				if !strings.HasPrefix(req.URL.Path, expectedURL) {
-					return nil, fmt.Errorf("expected URL '%s', got '%s'", expectedURL, req.URL)
+		client, err := New(WithMockClient(func(req *http.Request) (*http.Response, error) {
+			if err := assertRequest(req, http.MethodPost, expectedURL); err != nil {
+				return nil, err
+			}
+			query := req.URL.Query()
+			for key, expected := range tagCase.expectedQueryParams {
+				actual := query.Get(key)
+				if actual != expected {
+					return nil, fmt.Errorf("%s not set in URL query properly. Expected '%s', got %s", key, expected, actual)
 				}
-				if req.Method != http.MethodPost {
-					return nil, fmt.Errorf("expected POST method, got %s", req.Method)
-				}
-				query := req.URL.Query()
-				for key, expected := range tagCase.expectedQueryParams {
-					actual := query.Get(key)
-					if actual != expected {
-						return nil, fmt.Errorf("%s not set in URL query properly. Expected '%s', got %s", key, expected, actual)
-					}
-				}
-				return &http.Response{
-					StatusCode: http.StatusOK,
-					Body:       io.NopCloser(bytes.NewReader([]byte(""))),
-				}, nil
-			}),
-		}
-		err := client.ImageTag(context.Background(), "image_id", tagCase.reference)
+			}
+			return mockResponse(http.StatusOK, nil, "")(req)
+		}))
+		assert.NilError(t, err)
+		_, err = client.ImageTag(context.Background(), ImageTagOptions{Source: "image_id", Target: tagCase.reference})
 		assert.NilError(t, err)
 	}
 }

@@ -22,17 +22,15 @@ import (
 	"github.com/containerd/platforms"
 	"github.com/distribution/reference"
 	"github.com/moby/go-archive/chrootarchive"
-	"github.com/moby/moby/api/pkg/progress"
-	"github.com/moby/moby/api/types"
 	"github.com/moby/moby/api/types/events"
-	"github.com/moby/moby/api/types/filters"
 	"github.com/moby/moby/api/types/plugin"
 	"github.com/moby/moby/api/types/registry"
 	"github.com/moby/moby/v2/daemon/internal/containerfs"
+	"github.com/moby/moby/v2/daemon/internal/filters"
+	"github.com/moby/moby/v2/daemon/internal/progress"
 	"github.com/moby/moby/v2/daemon/internal/stringid"
 	v2 "github.com/moby/moby/v2/daemon/pkg/plugin/v2"
 	"github.com/moby/moby/v2/daemon/server/backend"
-	"github.com/moby/moby/v2/dockerversion"
 	"github.com/moby/moby/v2/errdefs"
 	"github.com/moby/moby/v2/pkg/authorization"
 	"github.com/moby/moby/v2/pkg/pools"
@@ -465,8 +463,19 @@ func (pm *Manager) Push(ctx context.Context, name string, metaHeader http.Header
 		progress.Update(out, pj.names[j], "Upload complete")
 	}
 
+	// pushResult contains the tag, manifest digest, and manifest size from the
+	// push. It's used to signal this information to the trust code in the client
+	// so it can sign the manifest if necessary.
+	//
+	// TODO(thaJeztah): this aux-type is only present for docker content trust, which is deprecated.
+	type pushResult struct {
+		Tag    string
+		Digest string
+		Size   int
+	}
+
 	// Signal the client for content trust verification
-	progress.Aux(out, types.PushResult{Tag: ref.(reference.Tagged).Tag(), Digest: desc.Digest.String(), Size: int(desc.Size)})
+	progress.Aux(out, pushResult{Tag: ref.(reference.Tagged).Tag(), Digest: desc.Digest.String(), Size: int(desc.Size)})
 
 	return nil
 }
@@ -706,8 +715,6 @@ func (pm *Manager) CreateFromContext(ctx context.Context, tarCtx io.ReadCloser, 
 		Type:    "layers",
 		DiffIds: []string{rootFSBlob.Digest().String()},
 	}
-
-	config.DockerVersion = dockerversion.Version
 
 	configBlob, err := pm.blobStore.Writer(ctx, content.WithRef(name+"-config.json"))
 	if err != nil {

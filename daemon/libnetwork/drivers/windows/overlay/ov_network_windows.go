@@ -15,7 +15,7 @@ import (
 	"github.com/moby/moby/v2/daemon/libnetwork/driverapi"
 	"github.com/moby/moby/v2/daemon/libnetwork/drivers/overlay"
 	"github.com/moby/moby/v2/daemon/libnetwork/netlabel"
-	"github.com/moby/moby/v2/daemon/libnetwork/portmapper"
+	"github.com/moby/moby/v2/daemon/libnetwork/portallocator"
 	"github.com/moby/moby/v2/daemon/libnetwork/types"
 )
 
@@ -50,16 +50,8 @@ type network struct {
 	initErr         error
 	subnets         []*subnet
 	secure          bool
-	portMapper      *portmapper.PortMapper
+	pa              *portallocator.OSAllocator
 	sync.Mutex
-}
-
-func (d *driver) NetworkAllocate(id string, option map[string]string, ipV4Data, ipV6Data []driverapi.IPAMData) (map[string]string, error) {
-	return nil, types.NotImplementedErrorf("not implemented")
-}
-
-func (d *driver) NetworkFree(id string) error {
-	return types.NotImplementedErrorf("not implemented")
 }
 
 func (d *driver) CreateNetwork(ctx context.Context, id string, option map[string]any, nInfo driverapi.NetworkInfo, ipV4Data, ipV6Data []driverapi.IPAMData) error {
@@ -94,11 +86,11 @@ func (d *driver) CreateNetwork(ctx context.Context, id string, option map[string
 	}
 
 	n := &network{
-		id:         id,
-		driver:     d,
-		endpoints:  endpointTable{},
-		subnets:    []*subnet{},
-		portMapper: portmapper.New(),
+		id:        id,
+		driver:    d,
+		endpoints: endpointTable{},
+		subnets:   []*subnet{},
+		pa:        portallocator.New(),
 	}
 
 	genData, ok := option[netlabel.GenericData].(map[string]string)

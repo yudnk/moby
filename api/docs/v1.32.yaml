@@ -60,7 +60,6 @@ info:
     {
       "username": "string",
       "password": "string",
-      "email": "string",
       "serveraddress": "string"
     }
     ```
@@ -447,10 +446,6 @@ definitions:
           example: "c 13:* rwm"
       DiskQuota:
         description: "Disk limit (in bytes)."
-        type: "integer"
-        format: "int64"
-      KernelMemory:
-        description: "Kernel memory limit in bytes."
         type: "integer"
         format: "int64"
       MemoryReservation:
@@ -1308,6 +1303,10 @@ definitions:
       password:
         type: "string"
       email:
+        description: |
+          Email is an optional value associated with the username.
+
+          > **Deprecated**: This field is deprecated since docker 1.11 (API v1.23) and will be removed in a future release.
         type: "string"
       serveraddress:
         type: "string"
@@ -3519,10 +3518,6 @@ definitions:
         description: "Indicates if the host has memory swap limit support enabled."
         type: "boolean"
         example: true
-      KernelMemory:
-        description: "Indicates if the host has kernel memory limit support enabled."
-        type: "boolean"
-        example: true
       CpuCfsPeriod:
         description: "Indicates if CPU CFS(Completely Fair Scheduler) period is supported by the host."
         type: "boolean"
@@ -4396,7 +4391,6 @@ paths:
                 Memory: 0
                 MemorySwap: 0
                 MemoryReservation: 0
-                KernelMemory: 0
                 NanoCpus: 500000
                 CpuPercent: 80
                 CpuShares: 512
@@ -4704,7 +4698,6 @@ paths:
                 Memory: 0
                 MemorySwap: 0
                 MemoryReservation: 0
-                KernelMemory: 0
                 OomKillDisable: false
                 OomScoreAdj: 500
                 NetworkMode: "bridge"
@@ -5393,7 +5386,6 @@ paths:
               Memory: 314572800
               MemorySwap: 514288000
               MemoryReservation: 209715200
-              KernelMemory: 52428800
               RestartPolicy:
                 MaximumRetryCount: 4
                 Name: "on-failure"

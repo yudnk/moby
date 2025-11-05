@@ -20,8 +20,8 @@ import (
 	"github.com/moby/moby/client"
 	"github.com/moby/moby/v2/integration-cli/cli"
 	"github.com/moby/moby/v2/integration-cli/daemon"
-	"github.com/moby/moby/v2/internal/testutils/specialimage"
-	"github.com/moby/moby/v2/testutil"
+	"github.com/moby/moby/v2/internal/testutil"
+	"github.com/moby/moby/v2/internal/testutil/specialimage"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 	"gotest.tools/v3/icmd"
@@ -132,17 +132,6 @@ func getIDByName(t *testing.T, name string) string {
 	return id
 }
 
-// Deprecated: use cli.Docker
-func buildImageSuccessfully(t *testing.T, name string, cmdOperators ...cli.CmdOperator) {
-	t.Helper()
-	cli.Docker(cli.Args("build", "-t", name), cmdOperators...).Assert(t, icmd.Success)
-}
-
-// Deprecated: use cli.Docker
-func buildImage(name string, cmdOperators ...cli.CmdOperator) *icmd.Result {
-	return cli.Docker(cli.Args("build", "-t", name), cmdOperators...)
-}
-
 // Write `content` to the file at path `dst`, creating it if necessary,
 // as well as any missing directories.
 // The file is truncated if it already exists.
@@ -207,12 +196,13 @@ func daemonTime(t *testing.T) time.Time {
 	if testEnv.IsLocalDaemon() {
 		return time.Now()
 	}
-	apiClient, err := client.NewClientWithOpts(client.FromEnv)
+	apiClient, err := client.New(client.FromEnv)
 	assert.NilError(t, err)
 	defer apiClient.Close()
 
-	info, err := apiClient.Info(testutil.GetContext(t))
+	result, err := apiClient.Info(testutil.GetContext(t), client.InfoOptions{})
 	assert.NilError(t, err)
+	info := result.Info
 
 	dt, err := time.Parse(time.RFC3339Nano, info.SystemTime)
 	assert.Assert(t, err == nil, "invalid time format in GET /info response")
@@ -262,14 +252,14 @@ func waitInspect(name, expr, expected string, timeout time.Duration) error {
 	return daemon.WaitInspectWithArgs(dockerBinary, name, expr, expected, timeout)
 }
 
-func getInspectBody(t *testing.T, version, id string) []byte {
+func getInspectBody(t *testing.T, version, id string) json.RawMessage {
 	t.Helper()
-	apiClient, err := client.NewClientWithOpts(client.FromEnv, client.WithVersion(version))
+	apiClient, err := client.New(client.FromEnv, client.WithVersion(version))
 	assert.NilError(t, err)
 	defer apiClient.Close()
-	_, body, err := apiClient.ContainerInspectWithRaw(testutil.GetContext(t), id, false)
+	inspect, err := apiClient.ContainerInspect(testutil.GetContext(t), id, client.ContainerInspectOptions{})
 	assert.NilError(t, err)
-	return body
+	return inspect.Raw
 }
 
 // Run a long running idle task in a background container using the
@@ -297,11 +287,11 @@ func minimalBaseImage() string {
 }
 
 func getGoroutineNumber(ctx context.Context, apiClient client.APIClient) (int, error) {
-	info, err := apiClient.Info(ctx)
+	result, err := apiClient.Info(ctx, client.InfoOptions{})
 	if err != nil {
 		return 0, err
 	}
-	return info.NGoroutines, nil
+	return result.Info.NGoroutines, nil
 }
 
 func waitForStableGoroutineCount(ctx context.Context, t poll.TestingT, apiClient client.APIClient) int {

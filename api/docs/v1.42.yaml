@@ -81,7 +81,6 @@ info:
     {
       "username": "string",
       "password": "string",
-      "email": "string",
       "serveraddress": "string"
     }
     ```
@@ -2203,6 +2202,10 @@ definitions:
       password:
         type: "string"
       email:
+        description: |
+          Email is an optional value associated with the username.
+
+          > **Deprecated**: This field is deprecated since docker 1.11 (API v1.23) and will be removed in a future release.
         type: "string"
       serveraddress:
         type: "string"
@@ -2616,14 +2619,6 @@ definitions:
         description: |
           Unique ID of the build cache record.
         example: "ndlpt0hhvkqcdfkputsk4cq9c"
-      Parent:
-        description: |
-          ID of the parent build cache record.
-
-          > **Deprecated**: This field is deprecated, and omitted if empty.
-        type: "string"
-        x-nullable: true
-        example: ""
       Parents:
         description: |
           List of parent build cache record IDs.

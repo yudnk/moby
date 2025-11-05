@@ -11,10 +11,13 @@ import (
 
 func TestAdjustForAPIVersion(t *testing.T) {
 	expectedSysctls := map[string]string{"foo": "bar"}
+	swapBytes := int64(12)
+	memorySwappiness := int64(28)
+
 	// testing the negative -- does this leave everything else alone? -- is
 	// prohibitively time-consuming to write, because it would need an object
 	// with literally every field filled in.
-	spec := &swarm.ServiceSpec{
+	serviceSpec := swarm.ServiceSpec{
 		TaskTemplate: swarm.TaskSpec{
 			ContainerSpec: &swarm.ContainerSpec{
 				Sysctls: expectedSysctls,
@@ -66,8 +69,23 @@ func TestAdjustForAPIVersion(t *testing.T) {
 				Limits: &swarm.Limit{
 					Pids: 300,
 				},
+				SwapBytes:        &swapBytes,
+				MemorySwappiness: &memorySwappiness,
 			},
 		},
+	}
+
+	spec := &serviceWithLegacy{
+		ServiceSpec: serviceSpec,
+	}
+
+	adjustForAPIVersion("1.52", spec)
+	if spec.TaskTemplate.Resources.MemorySwappiness == nil {
+		t.Error("SwapBytes was stripped from spec")
+	}
+
+	if spec.TaskTemplate.Resources.SwapBytes == nil {
+		t.Error("MemorySwappiness was stripped from spec")
 	}
 
 	adjustForAPIVersion("1.46", spec)
@@ -138,5 +156,12 @@ func TestAdjustForAPIVersion(t *testing.T) {
 
 	if len(spec.TaskTemplate.ContainerSpec.Ulimits) != 0 {
 		t.Error("Ulimits were not stripped from spec")
+	}
+	if spec.TaskTemplate.Resources.MemorySwappiness != nil {
+		t.Error("SwapBytes was not stripped from spec")
+	}
+
+	if spec.TaskTemplate.Resources.SwapBytes != nil {
+		t.Error("MemorySwappiness was not stripped from spec")
 	}
 }

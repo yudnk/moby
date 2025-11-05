@@ -5,12 +5,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/moby/moby/api/types/filters"
-	"github.com/moby/moby/api/types/image"
-	"github.com/moby/moby/client/pkg/jsonmessage"
+	"github.com/moby/moby/api/types/jsonstream"
+	"github.com/moby/moby/client"
 	"github.com/moby/moby/v2/integration/internal/container"
-	"github.com/moby/moby/v2/testutil"
-	"github.com/moby/moby/v2/testutil/daemon"
+	"github.com/moby/moby/v2/internal/testutil"
+	"github.com/moby/moby/v2/internal/testutil/daemon"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 	"gotest.tools/v3/poll"
@@ -28,27 +27,27 @@ func TestExportContainerAndImportImage(t *testing.T) {
 	poll.WaitOn(t, container.IsStopped(ctx, apiClient, cID))
 
 	reference := "repo/" + strings.ToLower(t.Name()) + ":v1"
-	exportResp, err := apiClient.ContainerExport(ctx, cID)
+	exportRes, err := apiClient.ContainerExport(ctx, cID, client.ContainerExportOptions{})
 	assert.NilError(t, err)
-	importResp, err := apiClient.ImageImport(ctx, image.ImportSource{
-		Source:     exportResp,
+	importRes, err := apiClient.ImageImport(ctx, client.ImageImportSource{
+		Source:     exportRes,
 		SourceName: "-",
-	}, reference, image.ImportOptions{})
+	}, reference, client.ImageImportOptions{})
 	assert.NilError(t, err)
 
 	// If the import is successfully, then the message output should contain
 	// the image ID and match with the output from `docker images`.
 
-	dec := json.NewDecoder(importResp)
-	var jm jsonmessage.JSONMessage
+	dec := json.NewDecoder(importRes)
+	var jm jsonstream.Message
 	err = dec.Decode(&jm)
 	assert.NilError(t, err)
 
-	images, err := apiClient.ImageList(ctx, image.ListOptions{
-		Filters: filters.NewArgs(filters.Arg("reference", reference)),
+	images, err := apiClient.ImageList(ctx, client.ImageListOptions{
+		Filters: make(client.Filters).Add("reference", reference),
 	})
 	assert.NilError(t, err)
-	assert.Check(t, is.Equal(jm.Status, images[0].ID))
+	assert.Check(t, is.Equal(jm.Status, images.Items[0].ID))
 }
 
 // TestExportContainerAfterDaemonRestart checks that a container
@@ -71,6 +70,6 @@ func TestExportContainerAfterDaemonRestart(t *testing.T) {
 
 	d.Restart(t)
 
-	_, err := c.ContainerExport(ctx, ctrID)
+	_, err := c.ContainerExport(ctx, ctrID, client.ContainerExportOptions{})
 	assert.NilError(t, err)
 }

@@ -15,7 +15,7 @@ import (
 	"github.com/moby/moby/client"
 	"github.com/moby/moby/v2/integration-cli/cli"
 	"github.com/moby/moby/v2/integration-cli/cli/build"
-	"github.com/moby/moby/v2/testutil"
+	"github.com/moby/moby/v2/internal/testutil"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 	"gotest.tools/v3/icmd"
@@ -69,7 +69,7 @@ func (s *DockerCLIVolumeSuite) TestVolumeCLIInspectMulti(c *testing.T) {
 	result := cli.Docker(cli.Args("volume", "inspect", "--format={{ .Name }}", "test1", "test2", "doesnotexist", "test3"))
 	result.Assert(c, icmd.Expected{
 		ExitCode: 1,
-		Err:      "No such volume: doesnotexist",
+		Err:      "no such volume",
 	})
 
 	out := result.Stdout()
@@ -227,7 +227,7 @@ func (s *DockerCLIVolumeSuite) TestVolumeCLIRm(c *testing.T) {
 func (s *DockerCLIVolumeSuite) TestVolumeCLINoArgs(c *testing.T) {
 	out := cli.DockerCmd(c, "volume").Combined()
 	// no args should produce the cmd usage output
-	usage := "Usage:	docker volume COMMAND"
+	usage := "docker volume COMMAND --help"
 	assert.Assert(c, is.Contains(out, usage))
 	// invalid arg should error and show the command usage on stderr
 	icmd.RunCommand(dockerBinary, "volume", "somearg").Assert(c, icmd.Expected{
@@ -253,7 +253,7 @@ func (s *DockerCLIVolumeSuite) TestVolumeCLIInspectTmplError(c *testing.T) {
 	out, exitCode, err := dockerCmdWithError("volume", "inspect", "--format='{{ .FooBar }}'", name)
 	assert.Assert(c, err != nil, "Output: %s", out)
 	assert.Equal(c, exitCode, 1, fmt.Sprintf("Output: %s", out))
-	assert.Assert(c, is.Contains(out, "Template parsing error"))
+	assert.Assert(c, is.Contains(out, "parsing error"))
 }
 
 func (s *DockerCLIVolumeSuite) TestVolumeCLICreateWithOpts(c *testing.T) {
@@ -471,7 +471,7 @@ func (s *DockerCLIVolumeSuite) TestDuplicateMountpointsForVolumesFrom(c *testing
 	testRequires(c, DaemonIsLinux)
 
 	const imgName = "vimage"
-	buildImageSuccessfully(c, imgName, build.WithDockerfile(`
+	cli.BuildCmd(c, imgName, build.WithDockerfile(`
 		FROM busybox
 		VOLUME ["/tmp/data"]`))
 
@@ -512,7 +512,7 @@ func (s *DockerCLIVolumeSuite) TestDuplicateMountpointsForVolumesFromAndBind(c *
 	testRequires(c, DaemonIsLinux)
 
 	const imgName = "vimage"
-	buildImageSuccessfully(c, imgName, build.WithDockerfile(`
+	cli.BuildCmd(c, imgName, build.WithDockerfile(`
                 FROM busybox
                 VOLUME ["/tmp/data"]`))
 
@@ -554,7 +554,7 @@ func (s *DockerCLIVolumeSuite) TestDuplicateMountpointsForVolumesFromAndMounts(c
 	testRequires(c, testEnv.IsLocalDaemon, DaemonIsLinux)
 
 	const imgName = "vimage"
-	buildImageSuccessfully(c, imgName, build.WithDockerfile(`
+	cli.BuildCmd(c, imgName, build.WithDockerfile(`
                 FROM busybox
                 VOLUME ["/tmp/data"]`))
 
@@ -577,7 +577,7 @@ func (s *DockerCLIVolumeSuite) TestDuplicateMountpointsForVolumesFromAndMounts(c
 	assert.NilError(c, err)
 
 	// Mounts is available in API
-	apiClient, err := client.NewClientWithOpts(client.FromEnv)
+	apiClient, err := client.New(client.FromEnv)
 	assert.NilError(c, err)
 	defer apiClient.Close()
 
@@ -596,7 +596,12 @@ func (s *DockerCLIVolumeSuite) TestDuplicateMountpointsForVolumesFromAndMounts(c
 			},
 		},
 	}
-	_, err = apiClient.ContainerCreate(testutil.GetContext(c), &config, &hostConfig, &network.NetworkingConfig{}, nil, "app")
+	_, err = apiClient.ContainerCreate(testutil.GetContext(c), client.ContainerCreateOptions{
+		Config:           &config,
+		HostConfig:       &hostConfig,
+		NetworkingConfig: &network.NetworkingConfig{},
+		Name:             "app",
+	})
 
 	assert.NilError(c, err)
 

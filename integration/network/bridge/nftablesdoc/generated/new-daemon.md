@@ -1,3 +1,5 @@
+<!-- This is a generated file; DO NOT EDIT. -->
+
 ## nftables for a new Daemon
 
 When the daemon starts, it creates two tables, `ip docker-bridges` and
@@ -33,7 +35,7 @@ are then added.
     	}
     
     	chain nat-OUTPUT {
-    		type nat hook output priority -100; policy accept;
+    		type nat hook output priority dstnat; policy accept;
     		ip daddr != 127.0.0.0/8 fib daddr type local counter jump nat-prerouting-and-output
     	}
     

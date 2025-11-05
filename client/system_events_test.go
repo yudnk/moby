@@ -8,67 +8,63 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 	"testing"
 
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/moby/moby/api/types/events"
-	"github.com/moby/moby/api/types/filters"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 )
 
 func TestEventsErrorInOptions(t *testing.T) {
 	errorCases := []struct {
-		options       events.ListOptions
+		options       EventsListOptions
 		expectedError string
 	}{
 		{
-			options: events.ListOptions{
+			options: EventsListOptions{
 				Since: "2006-01-02TZ",
 			},
 			expectedError: `parsing time "2006-01-02TZ"`,
 		},
 		{
-			options: events.ListOptions{
+			options: EventsListOptions{
 				Until: "2006-01-02TZ",
 			},
 			expectedError: `parsing time "2006-01-02TZ"`,
 		},
 	}
 	for _, tc := range errorCases {
-		client := &Client{
-			client: newMockClient(errorMock(http.StatusInternalServerError, "Server error")),
-		}
-		_, errs := client.Events(context.Background(), tc.options)
-		err := <-errs
+		client, err := New(WithMockClient(errorMock(http.StatusInternalServerError, "Server error")))
+		assert.NilError(t, err)
+		events := client.Events(context.Background(), tc.options)
+		err = <-events.Err
 		assert.Check(t, is.ErrorContains(err, tc.expectedError))
 	}
 }
 
 func TestEventsErrorFromServer(t *testing.T) {
-	client := &Client{
-		client: newMockClient(errorMock(http.StatusInternalServerError, "Server error")),
-	}
-	_, errs := client.Events(context.Background(), events.ListOptions{})
-	err := <-errs
+	client, err := New(WithMockClient(errorMock(http.StatusInternalServerError, "Server error")))
+	assert.NilError(t, err)
+	events := client.Events(context.Background(), EventsListOptions{})
+	err = <-events.Err
 	assert.Check(t, is.ErrorType(err, cerrdefs.IsInternal))
 }
 
 func TestEvents(t *testing.T) {
 	const expectedURL = "/events"
 
-	fltrs := filters.NewArgs(filters.Arg("type", string(events.ContainerEventType)))
+	fltrs := make(Filters).Add("type", string(events.ContainerEventType))
 	expectedFiltersJSON := fmt.Sprintf(`{"type":{%q:true}}`, events.ContainerEventType)
 
 	eventsCases := []struct {
-		options             events.ListOptions
+		options             EventsListOptions
 		events              []events.Message
 		expectedEvents      map[string]bool
 		expectedQueryParams map[string]string
 	}{
 		{
-			options: events.ListOptions{
+			options: EventsListOptions{
 				Filters: fltrs,
 			},
 			expectedQueryParams: map[string]string{
@@ -78,7 +74,7 @@ func TestEvents(t *testing.T) {
 			expectedEvents: make(map[string]bool),
 		},
 		{
-			options: events.ListOptions{
+			options: EventsListOptions{
 				Filters: fltrs,
 			},
 			expectedQueryParams: map[string]string{
@@ -110,46 +106,45 @@ func TestEvents(t *testing.T) {
 	}
 
 	for _, eventsCase := range eventsCases {
-		client := &Client{
-			client: newMockClient(func(req *http.Request) (*http.Response, error) {
-				if !strings.HasPrefix(req.URL.Path, expectedURL) {
-					return nil, fmt.Errorf("Expected URL '%s', got '%s'", expectedURL, req.URL)
+		client, err := New(WithMockClient(func(req *http.Request) (*http.Response, error) {
+			if err := assertRequest(req, http.MethodGet, expectedURL); err != nil {
+				return nil, err
+			}
+			query := req.URL.Query()
+
+			for key, expected := range eventsCase.expectedQueryParams {
+				actual := query.Get(key)
+				if actual != expected {
+					return nil, fmt.Errorf("%s not set in URL query properly. Expected '%s', got %s", key, expected, actual)
 				}
-				query := req.URL.Query()
+			}
 
-				for key, expected := range eventsCase.expectedQueryParams {
-					actual := query.Get(key)
-					if actual != expected {
-						return nil, fmt.Errorf("%s not set in URL query properly. Expected '%s', got %s", key, expected, actual)
-					}
-				}
+			buffer := new(bytes.Buffer)
 
-				buffer := new(bytes.Buffer)
+			for _, e := range eventsCase.events {
+				b, _ := json.Marshal(e)
+				buffer.Write(b)
+			}
 
-				for _, e := range eventsCase.events {
-					b, _ := json.Marshal(e)
-					buffer.Write(b)
-				}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(buffer),
+			}, nil
+		}))
+		assert.NilError(t, err)
 
-				return &http.Response{
-					StatusCode: http.StatusOK,
-					Body:       io.NopCloser(buffer),
-				}, nil
-			}),
-		}
-
-		messages, errs := client.Events(context.Background(), eventsCase.options)
+		events := client.Events(context.Background(), eventsCase.options)
 
 	loop:
 		for {
 			select {
-			case err := <-errs:
+			case err := <-events.Err:
 				if err != nil && !errors.Is(err, io.EOF) {
 					t.Fatal(err)
 				}
 
 				break loop
-			case e := <-messages:
+			case e := <-events.Messages:
 				_, ok := eventsCase.expectedEvents[e.Actor.ID]
 				assert.Check(t, ok, "event received not expected with action %s & id %s", e.Action, e.Actor.ID)
 			}

@@ -11,7 +11,6 @@ import (
 
 	"github.com/containerd/containerd/v2/pkg/tracing"
 	"github.com/containerd/log"
-	"github.com/moby/moby/api/types"
 	"github.com/moby/moby/api/types/system"
 	"github.com/moby/moby/v2/daemon/command/debug"
 	"github.com/moby/moby/v2/daemon/config"
@@ -101,20 +100,20 @@ func (daemon *Daemon) SystemInfo(ctx context.Context) (*system.Info, error) {
 // Anything else should be logged and ignored because this is looking up
 // multiple things and is often used for debugging.
 // The only case valid early return is when the caller doesn't want the result anymore (ie context cancelled).
-func (daemon *Daemon) SystemVersion(ctx context.Context) (types.Version, error) {
+func (daemon *Daemon) SystemVersion(ctx context.Context) (system.VersionResponse, error) {
 	defer metrics.StartTimer(metrics.HostInfoFunctions.WithValues("system_version"))()
 
 	kernelVer := kernelVersion(ctx)
 	cfg := daemon.config()
 
-	v := types.Version{
-		Components: []types.ComponentVersion{
+	v := system.VersionResponse{
+		Components: []system.ComponentVersion{
 			{
 				Name:    "Engine",
 				Version: dockerversion.Version,
 				Details: map[string]string{
 					"GitCommit":     dockerversion.GitCommit,
-					"ApiVersion":    config.DefaultAPIVersion,
+					"ApiVersion":    config.MaxAPIVersion,
 					"MinAPIVersion": cfg.MinAPIVersion,
 					"GoVersion":     runtime.Version(),
 					"Os":            runtime.GOOS,
@@ -129,7 +128,7 @@ func (daemon *Daemon) SystemVersion(ctx context.Context) (types.Version, error) 
 		// Populate deprecated fields for older clients
 		Version:       dockerversion.Version,
 		GitCommit:     dockerversion.GitCommit,
-		APIVersion:    config.DefaultAPIVersion,
+		APIVersion:    config.MaxAPIVersion,
 		MinAPIVersion: cfg.MinAPIVersion,
 		GoVersion:     runtime.Version(),
 		Os:            runtime.GOOS,
@@ -175,6 +174,10 @@ func (daemon *Daemon) fillPluginsInfo(ctx context.Context, v *system.Info, cfg *
 	}
 }
 
+// fillSecurityOptions fills the [system.Info.SecurityOptions] field based
+// on the daemon configuration.
+//
+// TODO(thaJeztah): consider making [system.Info.SecurityOptions] a structured response as originally intended in https://github.com/moby/moby/pull/26276
 func (daemon *Daemon) fillSecurityOptions(v *system.Info, sysInfo *sysinfo.SysInfo, cfg *config.Config) {
 	var securityOptions []string
 	if sysInfo.AppArmor {
@@ -249,10 +252,6 @@ func (daemon *Daemon) fillAPIInfo(v *system.Info, cfg *config.Config) {
          to the 'Docker daemon attack surface' section in the documentation for
          more information: https://docs.docker.com/go/attack-surface/`
 
-	if cfg.CorsHeaders != "" {
-		v.Warnings = append(v.Warnings, `DEPRECATED: The "api-cors-header" config parameter and the dockerd "--api-cors-header" option will be removed in the next release. Use a reverse proxy if you need CORS headers.`)
-	}
-
 	for _, host := range cfg.Hosts {
 		// cnf.Hosts is normalized during startup, so should always have a scheme/proto
 		proto, addr, _ := strings.Cut(host, "://")
@@ -276,7 +275,7 @@ func (daemon *Daemon) fillDefaultAddressPools(ctx context.Context, v *system.Inf
 	defer span.End()
 	for _, pool := range cfg.DefaultAddressPools.Value() {
 		v.DefaultAddressPools = append(v.DefaultAddressPools, system.NetworkAddressPool{
-			Base: pool.Base.String(),
+			Base: pool.Base,
 			Size: pool.Size,
 		})
 	}

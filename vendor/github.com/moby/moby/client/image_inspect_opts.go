@@ -49,15 +49,21 @@ func ImageInspectWithPlatform(platform *ocispec.Platform) ImageInspectOption {
 	})
 }
 
-// ImageInspectWithAPIOpts sets the API options for the image inspect operation.
-func ImageInspectWithAPIOpts(opts image.InspectOptions) ImageInspectOption {
-	return imageInspectOptionFunc(func(clientOpts *imageInspectOpts) error {
-		clientOpts.apiOptions = opts
-		return nil
-	})
-}
-
 type imageInspectOpts struct {
 	raw        *bytes.Buffer
-	apiOptions image.InspectOptions
+	apiOptions imageInspectOptions
+}
+
+type imageInspectOptions struct {
+	// Manifests returns the image manifests.
+	Manifests bool
+
+	// Platform selects the specific platform of a multi-platform image to inspect.
+	//
+	// This option is only available for API version 1.49 and up.
+	Platform *ocispec.Platform
+}
+
+type ImageInspectResult struct {
+	image.InspectResponse
 }

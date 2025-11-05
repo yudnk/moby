@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"maps"
-	"net"
 	"net/netip"
 	"os"
 	"runtime"
@@ -15,7 +13,6 @@ import (
 
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/containerd/log"
-	"github.com/docker/go-connections/nat"
 	containertypes "github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/events"
 	networktypes "github.com/moby/moby/api/types/network"
@@ -23,7 +20,6 @@ import (
 	"github.com/moby/moby/v2/daemon/container"
 	"github.com/moby/moby/v2/daemon/internal/metrics"
 	"github.com/moby/moby/v2/daemon/internal/multierror"
-	"github.com/moby/moby/v2/daemon/internal/sliceutil"
 	"github.com/moby/moby/v2/daemon/internal/stringid"
 	"github.com/moby/moby/v2/daemon/libnetwork"
 	"github.com/moby/moby/v2/daemon/libnetwork/netlabel"
@@ -32,24 +28,13 @@ import (
 	"github.com/moby/moby/v2/daemon/network"
 	"github.com/moby/moby/v2/daemon/pkg/opts"
 	"github.com/moby/moby/v2/errdefs"
+	"github.com/moby/moby/v2/internal/sliceutil"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
 
 const errSetupNetworking = "failed to set up container networking"
-
-func toNetIP(ips []string) ([]netip.Addr, error) {
-	var dnsAddrs []netip.Addr
-	for _, ns := range ips {
-		addr, err := netip.ParseAddr(ns)
-		if err != nil {
-			return nil, fmt.Errorf("bad nameserver address %s: %w", ns, err)
-		}
-		dnsAddrs = append(dnsAddrs, addr)
-	}
-	return dnsAddrs, nil
-}
 
 func buildSandboxOptions(cfg *config.Config, ctr *container.Container) ([]libnetwork.SandboxOption, error) {
 	var sboxOptions []libnetwork.SandboxOption
@@ -72,11 +57,7 @@ func buildSandboxOptions(cfg *config.Config, ctr *container.Container) ([]libnet
 	sboxOptions = append(sboxOptions, platformOpts...)
 
 	if len(ctr.HostConfig.DNS) > 0 {
-		dnsAddrs, err := toNetIP(ctr.HostConfig.DNS)
-		if err != nil {
-			return nil, err
-		}
-		sboxOptions = append(sboxOptions, libnetwork.OptionDNS(dnsAddrs))
+		sboxOptions = append(sboxOptions, libnetwork.OptionDNS(ctr.HostConfig.DNS))
 	} else if len(cfg.DNS) > 0 {
 		sboxOptions = append(sboxOptions, libnetwork.OptionDNS(cfg.DNS))
 	}
@@ -105,58 +86,63 @@ func buildSandboxOptions(cfg *config.Config, ctr *container.Container) ([]libnet
 				return nil, errors.New("unable to derive the IP value for host-gateway")
 			}
 			for _, gip := range cfg.HostGatewayIPs {
-				sboxOptions = append(sboxOptions, libnetwork.OptionExtraHost(host, gip.String()))
+				sboxOptions = append(sboxOptions, libnetwork.OptionExtraHost(host, gip.Unmap()))
 			}
 		} else {
-			sboxOptions = append(sboxOptions, libnetwork.OptionExtraHost(host, ip))
+			sboxOptions = append(sboxOptions, libnetwork.OptionExtraHost(host, netip.MustParseAddr(ip).Unmap()))
 		}
 	}
 
-	// Create a deep copy (as [nat.SortPortMap] mutates the map).
-	// Not using a maps.Clone here, as that won't dereference the
-	// slice (PortMap is a map[Port][]PortBinding).
-	bindings := make(containertypes.PortMap)
+	portBindings := make(networktypes.PortMap, len(ctr.HostConfig.PortBindings))
 	for p, b := range ctr.HostConfig.PortBindings {
-		bindings[p] = slices.Clone(b)
+		portBindings[p] = slices.Clone(b)
 	}
 
-	ports := slices.Collect(maps.Keys(ctr.Config.ExposedPorts))
-	nat.SortPortMap(ports, bindings)
+	for p := range ctr.Config.ExposedPorts {
+		if _, ok := portBindings[p]; !ok {
+			// Create nil entries for exposed but un-mapped ports.
+			portBindings[p] = nil
+		}
+	}
 
 	var (
 		publishedPorts []types.PortBinding
 		exposedPorts   []types.TransportPort
 	)
-	for _, port := range ports {
-		portProto := types.ParseProtocol(port.Proto())
-		portNum := uint16(port.Int())
+	for port, bindings := range portBindings {
+		protocol := types.ParseProtocol(string(port.Proto()))
 		exposedPorts = append(exposedPorts, types.TransportPort{
-			Proto: portProto,
-			Port:  portNum,
+			Proto: protocol,
+			Port:  port.Num(),
 		})
 
-		for _, binding := range bindings[port] {
-			newP, err := nat.NewPort(nat.SplitProtoPort(binding.HostPort))
-			var portStart, portEnd int
-			if err == nil {
-				portStart, portEnd, err = newP.Range()
+		for _, binding := range bindings {
+			var (
+				portRange networktypes.PortRange
+				err       error
+			)
+
+			// Empty HostPort means to map to an ephemeral port.
+			if binding.HostPort != "" {
+				portRange, err = networktypes.ParsePortRange(binding.HostPort)
+				if err != nil {
+					return nil, fmt.Errorf("error parsing HostPort value(%s):%v", binding.HostPort, err)
+				}
 			}
-			if err != nil {
-				return nil, fmt.Errorf("Error parsing HostPort value(%s):%v", binding.HostPort, err)
-			}
+
 			publishedPorts = append(publishedPorts, types.PortBinding{
-				Proto:       portProto,
-				Port:        portNum,
-				HostIP:      net.ParseIP(binding.HostIP),
-				HostPort:    uint16(portStart),
-				HostPortEnd: uint16(portEnd),
+				Proto:       protocol,
+				Port:        port.Num(),
+				HostIP:      binding.HostIP.AsSlice(),
+				HostPort:    portRange.Start(),
+				HostPortEnd: portRange.End(),
 			})
 		}
 
-		if ctr.HostConfig.PublishAllPorts && len(bindings[port]) == 0 {
+		if ctr.HostConfig.PublishAllPorts && len(bindings) == 0 {
 			publishedPorts = append(publishedPorts, types.PortBinding{
-				Proto: portProto,
-				Port:  portNum,
+				Proto: protocol,
+				Port:  port.Num(),
 			})
 		}
 	}
@@ -213,10 +199,6 @@ func (daemon *Daemon) updateNetworkSettings(ctr *container.Container, n *libnetw
 func (daemon *Daemon) updateEndpointNetworkSettings(cfg *config.Config, ctr *container.Container, n *libnetwork.Network, ep *libnetwork.Endpoint) error {
 	if err := buildEndpointInfo(ctr.NetworkSettings, n, ep); err != nil {
 		return err
-	}
-
-	if ctr.HostConfig.NetworkMode == network.DefaultNetwork {
-		ctr.NetworkSettings.Bridge = cfg.BridgeConfig.Iface
 	}
 
 	return nil
@@ -298,11 +280,11 @@ func (daemon *Daemon) findAndAttachNetwork(ctr *container.Container, idOrName st
 
 	var addresses []string
 	if epConfig != nil && epConfig.IPAMConfig != nil {
-		if epConfig.IPAMConfig.IPv4Address != "" {
-			addresses = append(addresses, epConfig.IPAMConfig.IPv4Address)
+		if epConfig.IPAMConfig.IPv4Address.IsValid() {
+			addresses = append(addresses, epConfig.IPAMConfig.IPv4Address.Unmap().String())
 		}
-		if epConfig.IPAMConfig.IPv6Address != "" {
-			addresses = append(addresses, epConfig.IPAMConfig.IPv6Address)
+		if epConfig.IPAMConfig.IPv6Address.IsValid() {
+			addresses = append(addresses, epConfig.IPAMConfig.IPv6Address.Unmap().String())
 		}
 	}
 
@@ -545,43 +527,21 @@ func validateEndpointSettings(nw *libnetwork.Network, nwName string, epConfig *n
 	// TODO(aker): move this into api/types/network/endpoint.go once enableIPOnPredefinedNetwork and
 	//  serviceDiscoveryOnDefaultNetwork are removed.
 	if !containertypes.NetworkMode(nwName).IsUserDefined() {
-		hasStaticAddresses := ipamConfig.IPv4Address != "" || ipamConfig.IPv6Address != ""
+		hasStaticAddresses := ipamConfig.IPv4Address.IsValid() || ipamConfig.IPv6Address.IsValid()
 		// On Linux, user specified IP address is accepted only by networks with user specified subnets.
 		if hasStaticAddresses && !enableIPOnPredefinedNetwork() {
 			errs = append(errs, cerrdefs.ErrInvalidArgument.WithMessage("user specified IP address is supported on user defined networks only"))
 		}
 		if len(epConfig.Aliases) > 0 && !serviceDiscoveryOnDefaultNetwork() {
-			errs = append(errs, cerrdefs.ErrInvalidArgument.WithMessage("network-scoped alias is supported only for containers in user defined networks"))
+			errs = append(errs, cerrdefs.ErrInvalidArgument.WithMessage("network-scoped aliases are only supported for user-defined networks"))
 		}
 	}
 
-	// TODO(aker): add a proper multierror.Append
-	if err := ipamConfig.Validate(); err != nil {
-		errs = append(errs, err.(interface{ Unwrap() []error }).Unwrap()...)
-	}
+	errs = normalizeEndpointIPAMConfig(errs, ipamConfig)
 
 	if nw != nil {
 		_, _, v4Configs, v6Configs := nw.IpamConfig()
-
-		var nwIPv4Subnets, nwIPv6Subnets []networktypes.NetworkSubnet
-		for _, nwIPAMConfig := range v4Configs {
-			nwIPv4Subnets = append(nwIPv4Subnets, nwIPAMConfig)
-		}
-		for _, nwIPAMConfig := range v6Configs {
-			nwIPv6Subnets = append(nwIPv6Subnets, nwIPAMConfig)
-		}
-
-		// TODO(aker): add a proper multierror.Append
-		if err := ipamConfig.IsInRange(nwIPv4Subnets, nwIPv6Subnets); err != nil {
-			errs = append(errs, err.(interface{ Unwrap() []error }).Unwrap()...)
-		}
-	}
-
-	if epConfig.MacAddress != "" {
-		_, err := net.ParseMAC(epConfig.MacAddress)
-		if err != nil {
-			return fmt.Errorf("invalid MAC address %s", epConfig.MacAddress)
-		}
+		errs = validateIPAMConfigIsInRange(errs, ipamConfig, v4Configs, v6Configs)
 	}
 
 	if sysctls, ok := epConfig.DriverOpts[netlabel.EndpointSysctls]; ok {
@@ -606,16 +566,80 @@ func validateEndpointSettings(nw *libnetwork.Network, nwName string, epConfig *n
 	return nil
 }
 
+// normalizeEndpointIPAMConfig checks whether cfg is valid and normalizes cfg in-place.
+func normalizeEndpointIPAMConfig(errs []error, cfg *networktypes.EndpointIPAMConfig) []error {
+	if cfg == nil {
+		return errs
+	}
+
+	if cfg.IPv4Address.IsValid() {
+		if !cfg.IPv4Address.Is4() && !cfg.IPv4Address.Is4In6() || cfg.IPv4Address.IsUnspecified() {
+			errs = append(errs, fmt.Errorf("invalid IPv4 address: %s", cfg.IPv4Address))
+		}
+	}
+	if cfg.IPv6Address.IsValid() {
+		if !cfg.IPv6Address.Is6() || cfg.IPv6Address.Is4In6() || cfg.IPv6Address.IsUnspecified() || cfg.IPv6Address.Zone() != "" {
+			errs = append(errs, fmt.Errorf("invalid IPv6 address: %s", cfg.IPv6Address))
+		}
+	}
+	for _, addr := range cfg.LinkLocalIPs {
+		if !addr.IsValid() || addr.IsUnspecified() {
+			errs = append(errs, fmt.Errorf("invalid link-local IP address: %s", addr))
+		}
+	}
+
+	cfg.IPv4Address = cfg.IPv4Address.Unmap()
+	cfg.IPv6Address = cfg.IPv6Address.Unmap()
+	for i, addr := range cfg.LinkLocalIPs {
+		cfg.LinkLocalIPs[i] = addr.Unmap()
+	}
+
+	return errs
+}
+
+// validateIPAMConfigIsInRange checks whether static IP addresses are valid in a specific network.
+func validateIPAMConfigIsInRange(errs []error, cfg *networktypes.EndpointIPAMConfig, v4Subnets, v6Subnets []*libnetwork.IpamConf) []error {
+	if err := validateEndpointIPAddress(cfg.IPv4Address, v4Subnets); err != nil {
+		errs = append(errs, err)
+	}
+	if err := validateEndpointIPAddress(cfg.IPv6Address, v6Subnets); err != nil {
+		errs = append(errs, err)
+	}
+	return errs
+}
+
+func validateEndpointIPAddress(epAddr netip.Addr, ipamSubnets []*libnetwork.IpamConf) error {
+	if !epAddr.IsValid() {
+		return nil
+	}
+
+	var staticSubnet bool
+	for _, subnet := range ipamSubnets {
+		if subnet.IsStatic() {
+			staticSubnet = true
+			if subnet.Contains(epAddr) {
+				return nil
+			}
+		}
+	}
+
+	if staticSubnet {
+		return fmt.Errorf("no configured subnet or ip-range contain the IP address %s", epAddr)
+	}
+
+	return errors.New("user specified IP address is supported only when connecting to networks with user configured subnets")
+}
+
 // cleanOperationalData resets the operational data from the passed endpoint settings
 func cleanOperationalData(es *network.EndpointSettings) {
 	es.EndpointID = ""
-	es.Gateway = ""
-	es.IPAddress = ""
+	es.Gateway = netip.Addr{}
+	es.IPAddress = netip.Addr{}
 	es.IPPrefixLen = 0
-	es.IPv6Gateway = ""
-	es.GlobalIPv6Address = ""
+	es.IPv6Gateway = netip.Addr{}
+	es.GlobalIPv6Address = netip.Addr{}
 	es.GlobalIPv6PrefixLen = 0
-	es.MacAddress = ""
+	es.MacAddress = nil
 	if es.IPAMOperational {
 		es.IPAMConfig = nil
 	}
@@ -700,7 +724,7 @@ func (daemon *Daemon) connectToNetwork(ctx context.Context, cfg *config.Config, 
 	endpointConfig.IPAMOperational = false
 	if nwCfg != nil {
 		if epConfig, ok := nwCfg.EndpointsConfig[nwName]; ok {
-			if endpointConfig.IPAMConfig == nil || (endpointConfig.IPAMConfig.IPv4Address == "" && endpointConfig.IPAMConfig.IPv6Address == "" && len(endpointConfig.IPAMConfig.LinkLocalIPs) == 0) {
+			if endpointConfig.IPAMConfig == nil || (!endpointConfig.IPAMConfig.IPv4Address.IsValid() && !endpointConfig.IPAMConfig.IPv6Address.IsValid() && len(endpointConfig.IPAMConfig.LinkLocalIPs) == 0) {
 				endpointConfig.IPAMOperational = true
 			}
 
@@ -735,15 +759,30 @@ func (daemon *Daemon) connectToNetwork(ctx context.Context, cfg *config.Config, 
 			}
 		}
 	}()
-	ctr.NetworkSettings.Networks[nwName] = endpointConfig
 
 	delete(ctr.NetworkSettings.Networks, n.ID())
-
-	if err := daemon.updateEndpointNetworkSettings(cfg, ctr, n, ep); err != nil {
-		return err
-	}
+	ctr.NetworkSettings.Networks[nwName] = endpointConfig
+	defer func() {
+		if retErr != nil {
+			delete(ctr.NetworkSettings.Networks, nwName)
+		}
+	}()
 
 	if nwName == network.DefaultNetwork {
+		// Legacy links must be prepared before the Endpoint.Join, because the network
+		// driver needs info about them - and, the daemon's network settings need to be
+		// filled-in for daemon.addLegacyLinks(). So, set up both here.
+		//
+		// However, this means if the Endpoint.Join drops the endpoint's IPv6 address
+		// (because there's a sysctl setting or some equivalent disabling IPv6 on the
+		// interface), host entries set up by addLegacyLinks() for IPv6 addresses of the
+		// linked container will be left behind in the container's /etc/hosts file. It
+		// won't be able to use those addresses, because it won't have IPv6 on that
+		// interface. So, even if the address is recycled by another container on the
+		// network, the old hosts entry can't access the wrong container.
+		if err := daemon.updateEndpointNetworkSettings(cfg, ctr, n, ep); err != nil {
+			return err
+		}
 		if err := daemon.addLegacyLinks(ctx, cfg, ctr, endpointConfig, sb); err != nil {
 			return err
 		}
@@ -754,7 +793,14 @@ func (daemon *Daemon) connectToNetwork(ctx context.Context, cfg *config.Config, 
 		return err
 	}
 
+	// Connect the container to the network. Note that this will release the IPv6
+	// address assigned to the Endpoint, if IPv6 is disabled on the interface
+	// (probably by an endpoint specific sysctl setting).
 	if err := ep.Join(ctx, sb, joinOptions...); err != nil {
+		return err
+	}
+
+	if err := daemon.updateEndpointNetworkSettings(cfg, ctr, n, ep); err != nil {
 		return err
 	}
 
@@ -790,11 +836,11 @@ func updateJoinInfo(networkSettings *network.Settings, n *libnetwork.Network, ep
 		// It is not an error to get an empty endpoint info
 		return nil
 	}
-	if epInfo.Gateway() != nil {
-		networkSettings.Networks[n.Name()].Gateway = epInfo.Gateway().String()
+	if gw, ok := netip.AddrFromSlice(epInfo.Gateway()); ok {
+		networkSettings.Networks[n.Name()].Gateway = gw.Unmap()
 	}
-	if epInfo.GatewayIPv6().To16() != nil {
-		networkSettings.Networks[n.Name()].IPv6Gateway = epInfo.GatewayIPv6().String()
+	if gw6, ok := netip.AddrFromSlice(epInfo.GatewayIPv6()); ok && gw6.Is6() {
+		networkSettings.Networks[n.Name()].IPv6Gateway = gw6
 	}
 	return nil
 }
@@ -921,10 +967,10 @@ func (daemon *Daemon) getNetworkedContainer(containerID, connectedContainerPrefi
 		// FIXME (thaJeztah): turns out we don't validate "--network container:<self>" during container create!
 		return nil, errdefs.System(errdefs.InvalidParameter(errors.New("cannot join own network namespace")))
 	}
-	if !nc.IsRunning() {
-		return nil, errdefs.Conflict(fmt.Errorf("cannot join network namespace of a non running container: container %s is %s", strings.TrimPrefix(nc.Name, "/"), nc.StateString()))
+	if !nc.State.IsRunning() {
+		return nil, errdefs.Conflict(fmt.Errorf("cannot join network namespace of a non running container: container %s is %s", strings.TrimPrefix(nc.Name, "/"), nc.State.StateString()))
 	}
-	if nc.IsRestarting() {
+	if nc.State.IsRestarting() {
 		return nil, fmt.Errorf("cannot join network namespace of container: %w", errContainerIsRestarting(connectedContainerPrefixOrName))
 	}
 	return nc, nil
@@ -997,8 +1043,8 @@ func (daemon *Daemon) ConnectToNetwork(ctx context.Context, ctr *container.Conta
 	ctr.Lock()
 	defer ctr.Unlock()
 
-	if !ctr.Running {
-		if ctr.RemovalInProgress || ctr.Dead {
+	if !ctr.State.Running {
+		if ctr.State.RemovalInProgress || ctr.State.Dead {
 			return errRemovalContainer(ctr.ID)
 		}
 
@@ -1030,8 +1076,8 @@ func (daemon *Daemon) DisconnectFromNetwork(ctx context.Context, ctr *container.
 	ctr.Lock()
 	defer ctr.Unlock()
 
-	if !ctr.Running || (err != nil && force) {
-		if ctr.RemovalInProgress || ctr.Dead {
+	if !ctr.State.Running || (err != nil && force) {
+		if ctr.State.RemovalInProgress || ctr.State.Dead {
 			return errRemovalContainer(ctr.ID)
 		}
 		// In case networkName is resolved we will use n.Name()

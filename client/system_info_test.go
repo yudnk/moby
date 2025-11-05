@@ -1,13 +1,8 @@
 package client
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
-	"fmt"
-	"io"
 	"net/http"
-	"strings"
 	"testing"
 
 	cerrdefs "github.com/containerd/errdefs"
@@ -17,91 +12,66 @@ import (
 )
 
 func TestInfoServerError(t *testing.T) {
-	client := &Client{
-		client: newMockClient(errorMock(http.StatusInternalServerError, "Server error")),
-	}
-	_, err := client.Info(context.Background())
+	client, err := New(WithMockClient(errorMock(http.StatusInternalServerError, "Server error")))
+	assert.NilError(t, err)
+	_, err = client.Info(context.Background(), InfoOptions{})
 	assert.Check(t, is.ErrorType(err, cerrdefs.IsInternal))
 }
 
 func TestInfoInvalidResponseJSONError(t *testing.T) {
-	client := &Client{
-		client: newMockClient(func(req *http.Request) (*http.Response, error) {
-			return &http.Response{
-				StatusCode: http.StatusOK,
-				Body:       io.NopCloser(bytes.NewReader([]byte("invalid json"))),
-			}, nil
-		}),
-	}
-	_, err := client.Info(context.Background())
+	client, err := New(WithMockClient(mockResponse(http.StatusOK, nil, "invalid json")))
+	assert.NilError(t, err)
+	_, err = client.Info(context.Background(), InfoOptions{})
 	assert.Check(t, is.ErrorContains(err, "invalid character"))
 }
 
 func TestInfo(t *testing.T) {
-	expectedURL := "/info"
-	client := &Client{
-		client: newMockClient(func(req *http.Request) (*http.Response, error) {
-			if !strings.HasPrefix(req.URL.Path, expectedURL) {
-				return nil, fmt.Errorf("Expected URL '%s', got '%s'", expectedURL, req.URL)
-			}
-			info := &system.Info{
-				ID:         "daemonID",
-				Containers: 3,
-			}
-			b, err := json.Marshal(info)
-			if err != nil {
-				return nil, err
-			}
-
-			return &http.Response{
-				StatusCode: http.StatusOK,
-				Body:       io.NopCloser(bytes.NewReader(b)),
-			}, nil
-		}),
-	}
-
-	info, err := client.Info(context.Background())
+	const expectedURL = "/info"
+	client, err := New(WithMockClient(func(req *http.Request) (*http.Response, error) {
+		if err := assertRequest(req, http.MethodGet, expectedURL); err != nil {
+			return nil, err
+		}
+		return mockJSONResponse(http.StatusOK, nil, system.Info{
+			ID:         "daemonID",
+			Containers: 3,
+		})(req)
+	}))
 	assert.NilError(t, err)
+
+	result, err := client.Info(context.Background(), InfoOptions{})
+	assert.NilError(t, err)
+	info := result.Info
 
 	assert.Check(t, is.Equal(info.ID, "daemonID"))
 	assert.Check(t, is.Equal(info.Containers, 3))
 }
 
 func TestInfoWithDiscoveredDevices(t *testing.T) {
-	expectedURL := "/info"
-	client := &Client{
-		client: newMockClient(func(req *http.Request) (*http.Response, error) {
-			if !strings.HasPrefix(req.URL.Path, expectedURL) {
-				return nil, fmt.Errorf("Expected URL '%s', got '%s'", expectedURL, req.URL)
-			}
-			info := &system.Info{
-				ID:         "daemonID",
-				Containers: 3,
-				DiscoveredDevices: []system.DeviceInfo{
-					{
-						Source: "cdi",
-						ID:     "vendor.com/gpu=0",
-					},
-					{
-						Source: "cdi",
-						ID:     "vendor.com/gpu=1",
-					},
+	const expectedURL = "/info"
+	client, err := New(WithMockClient(func(req *http.Request) (*http.Response, error) {
+		if err := assertRequest(req, http.MethodGet, expectedURL); err != nil {
+			return nil, err
+		}
+		return mockJSONResponse(http.StatusOK, nil, system.Info{
+			ID:         "daemonID",
+			Containers: 3,
+			DiscoveredDevices: []system.DeviceInfo{
+				{
+					Source: "cdi",
+					ID:     "vendor.com/gpu=0",
 				},
-			}
-			b, err := json.Marshal(info)
-			if err != nil {
-				return nil, err
-			}
-
-			return &http.Response{
-				StatusCode: http.StatusOK,
-				Body:       io.NopCloser(bytes.NewReader(b)),
-			}, nil
-		}),
-	}
-
-	info, err := client.Info(context.Background())
+				{
+					Source: "cdi",
+					ID:     "vendor.com/gpu=1",
+				},
+			},
+		})(req)
+	}))
 	assert.NilError(t, err)
+
+	result, err := client.Info(context.Background(), InfoOptions{})
+	assert.NilError(t, err)
+	info := result.Info
 
 	assert.Check(t, is.Equal(info.ID, "daemonID"))
 	assert.Check(t, is.Equal(info.Containers, 3))

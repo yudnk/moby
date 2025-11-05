@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -21,6 +22,7 @@ import (
 	containertypes "github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/events"
 	mounttypes "github.com/moby/moby/api/types/mount"
+	networktypes "github.com/moby/moby/api/types/network"
 	swarmtypes "github.com/moby/moby/api/types/swarm"
 	"github.com/moby/moby/v2/daemon/internal/image"
 	libcontainerdtypes "github.com/moby/moby/v2/daemon/internal/libcontainerd/types"
@@ -143,7 +145,7 @@ type localLogCacheMeta struct {
 func NewBaseContainer(id, root string) *Container {
 	return &Container{
 		ID:            id,
-		State:         NewState(),
+		State:         &State{},
 		ExecCommands:  NewExecStore(),
 		Root:          root,
 		MountPoints:   make(map[string]*volumemounts.MountPoint),
@@ -260,6 +262,7 @@ func (container *Container) readHostConfig() error {
 	}
 
 	container.InitDNSHostConfig()
+	container.BackfillEmptyPBs()
 
 	return nil
 }
@@ -534,7 +537,11 @@ func (container *Container) GetExecIDs() []string {
 // ShouldRestart decides whether the daemon should restart the container or not.
 // This is based on the container's restart policy.
 func (container *Container) ShouldRestart() bool {
-	shouldRestart, _, _ := container.RestartManager().ShouldRestart(uint32(container.ExitCode()), container.HasBeenManuallyStopped, container.FinishedAt.Sub(container.StartedAt))
+	shouldRestart, _, _ := container.RestartManager().ShouldRestart(
+		uint32(container.State.ExitCode),
+		container.HasBeenManuallyStopped,
+		container.State.FinishedAt.Sub(container.State.StartedAt),
+	)
 	return shouldRestart
 }
 
@@ -613,7 +620,7 @@ func (container *Container) InitDNSHostConfig() {
 	container.Lock()
 	defer container.Unlock()
 	if container.HostConfig.DNS == nil {
-		container.HostConfig.DNS = make([]string, 0)
+		container.HostConfig.DNS = make([]netip.Addr, 0)
 	}
 
 	if container.HostConfig.DNSSearch == nil {
@@ -622,6 +629,32 @@ func (container *Container) InitDNSHostConfig() {
 
 	if container.HostConfig.DNSOptions == nil {
 		container.HostConfig.DNSOptions = make([]string, 0)
+	}
+}
+
+// BackfillEmptyPBs backfills empty PortBindings slices with a port binding
+// with an unspecified HostIP and HostPort. This is required to ensure backward
+// compatibility for containers created with older Engine versions.
+//
+// Prior to v29.0, the daemon was doing this backfilling automatically through
+// github.com/docker/go-connections/nat on ContainerStart. Starting with that
+// version, it is done by the API for older API versions (i.e. < 1.53). Newer
+// API versions are just dropping entries with empty PortBindings slices.
+//
+// See https://github.com/moby/moby/pull/50710#discussion_r2315840899 for more
+// context.
+func (container *Container) BackfillEmptyPBs() {
+	if container.HostConfig == nil {
+		return
+	}
+
+	for portProto, pb := range container.HostConfig.PortBindings {
+		if len(pb) > 0 || pb == nil {
+			continue
+		}
+		container.HostConfig.PortBindings[portProto] = []networktypes.PortBinding{
+			{}, // Backfill an empty PortBinding
+		}
 	}
 }
 
@@ -810,11 +843,11 @@ func (container *Container) RestoreTask(ctx context.Context, client libcontainer
 	container.Lock()
 	defer container.Unlock()
 	var err error
-	container.ctr, err = client.LoadContainer(ctx, container.ID)
+	container.State.ctr, err = client.LoadContainer(ctx, container.ID)
 	if err != nil {
 		return err
 	}
-	container.task, err = container.ctr.AttachTask(ctx, container.InitializeStdio)
+	container.State.task, err = container.State.ctr.AttachTask(ctx, container.InitializeStdio)
 	if err != nil && !cerrdefs.IsNotFound(err) {
 		return err
 	}
@@ -830,10 +863,10 @@ func (container *Container) RestoreTask(ctx context.Context, client libcontainer
 //
 // The container lock must be held when calling this method.
 func (container *Container) GetRunningTask() (libcontainerdtypes.Task, error) {
-	if !container.Running {
+	if !container.State.Running {
 		return nil, errdefs.Conflict(fmt.Errorf("container %s is not running", container.ID))
 	}
-	tsk, ok := container.Task()
+	tsk, ok := container.State.Task()
 	if !ok {
 		return nil, errdefs.System(errors.WithStack(fmt.Errorf("container %s is in Running state but has no containerd Task set", container.ID)))
 	}

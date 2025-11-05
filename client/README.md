@@ -19,18 +19,17 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
 )
 
 func main() {
-	apiClient, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	apiClient, err := client.New(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
 		panic(err)
 	}
 	defer apiClient.Close()
 
-	containers, err := apiClient.ContainerList(context.Background(), container.ListOptions{All: true})
+	containers, err := apiClient.ContainerList(context.Background(), client.ContainerListOptions{All: true})
 	if err != nil {
 		panic(err)
 	}

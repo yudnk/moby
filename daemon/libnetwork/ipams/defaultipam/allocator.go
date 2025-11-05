@@ -8,8 +8,9 @@ import (
 	"net/netip"
 
 	"github.com/containerd/log"
+	"github.com/moby/moby/api/types/network"
+	"github.com/moby/moby/v2/daemon/internal/netiputil"
 	"github.com/moby/moby/v2/daemon/libnetwork/internal/addrset"
-	"github.com/moby/moby/v2/daemon/libnetwork/internal/netiputil"
 	"github.com/moby/moby/v2/daemon/libnetwork/ipamapi"
 	"github.com/moby/moby/v2/daemon/libnetwork/ipamutils"
 	"github.com/moby/moby/v2/daemon/libnetwork/types"
@@ -22,6 +23,8 @@ const (
 	localAddressSpace  = "LocalDefault"
 	globalAddressSpace = "GlobalDefault"
 )
+
+var _ ipamapi.PoolStatuser = &Allocator{}
 
 // Register registers the default ipam driver with libnetwork. It takes
 // two optional address pools respectively containing the list of user-defined
@@ -131,20 +134,40 @@ func (a *Allocator) RequestPool(req ipamapi.PoolRequest) (ipamapi.AllocatedPool,
 	if err != nil {
 		return ipamapi.AllocatedPool{}, err
 	}
+
+	k := PoolID{AddressSpace: req.AddressSpace}
+
+	prefixLength := 0
+
+	if req.Pool != "" {
+		prefix, err := netip.ParsePrefix(req.Pool)
+		if err != nil {
+			return ipamapi.AllocatedPool{}, parseErr(ipamapi.ErrInvalidPool)
+		}
+
+		if prefix.Addr().IsUnspecified() {
+			// If the prefix is unspecified, we're only interested in the prefix size.
+			// We'll attempt to use the specified size to allocate a subnet from the
+			// predefined pools.
+			req.Pool = ""
+
+			if prefix.Bits() > 0 {
+				prefixLength = prefix.Bits()
+			}
+		} else {
+			k.Subnet = prefix
+		}
+	}
+
 	if req.Pool == "" && req.SubPool != "" {
 		return ipamapi.AllocatedPool{}, parseErr(ipamapi.ErrInvalidSubPool)
 	}
 
-	k := PoolID{AddressSpace: req.AddressSpace}
 	if req.Pool == "" {
-		if k.Subnet, err = aSpace.allocatePredefinedPool(req.Exclude); err != nil {
+		if k.Subnet, err = aSpace.allocatePredefinedPool(req.Exclude, prefixLength); err != nil {
 			return ipamapi.AllocatedPool{}, err
 		}
 		return ipamapi.AllocatedPool{PoolID: k.String(), Pool: k.Subnet}, nil
-	}
-
-	if k.Subnet, err = netip.ParsePrefix(req.Pool); err != nil {
-		return ipamapi.AllocatedPool{}, parseErr(ipamapi.ErrInvalidPool)
 	}
 
 	if req.SubPool != "" {
@@ -310,6 +333,21 @@ func getAddress(base netip.Prefix, addrSet *addrset.AddrSet, prefAddress netip.A
 		return netip.Addr{}, err
 	}
 	return addr, nil
+}
+
+// PoolStatus returns the operational status of the specified IPAM pool.
+func (a *Allocator) PoolStatus(poolID string) (network.SubnetStatus, error) {
+	k, err := PoolIDFromString(poolID)
+	if err != nil {
+		return network.SubnetStatus{}, types.InvalidParameterErrorf("invalid pool id: %s", poolID)
+	}
+
+	aSpace, err := a.getAddrSpace(k.AddressSpace, k.Is6())
+	if err != nil {
+		return network.SubnetStatus{}, err
+	}
+
+	return aSpace.allocationStatus(k.Subnet, k.ChildSubnet)
 }
 
 // IsBuiltIn returns true for builtin drivers

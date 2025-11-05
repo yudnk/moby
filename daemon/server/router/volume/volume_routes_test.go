@@ -13,9 +13,10 @@ import (
 	"gotest.tools/v3/assert"
 
 	cerrdefs "github.com/containerd/errdefs"
-	"github.com/moby/moby/api/types/filters"
 	"github.com/moby/moby/api/types/volume"
+	"github.com/moby/moby/v2/daemon/internal/filters"
 	"github.com/moby/moby/v2/daemon/server/httputils"
+	"github.com/moby/moby/v2/daemon/server/volumebackend"
 	"github.com/moby/moby/v2/daemon/volume/service/opts"
 	"github.com/moby/moby/v2/errdefs"
 )
@@ -186,7 +187,7 @@ func TestCreateRegularVolume(t *testing.T) {
 		cluster: c,
 	}
 
-	volumeCreate := volume.CreateOptions{
+	volumeCreate := volume.CreateRequest{
 		Name:   "vol1",
 		Driver: "foodriver",
 	}
@@ -223,7 +224,7 @@ func TestCreateSwarmVolumeNoSwarm(t *testing.T) {
 		cluster: c,
 	}
 
-	volumeCreate := volume.CreateOptions{
+	volumeCreate := volume.CreateRequest{
 		ClusterVolumeSpec: &volume.ClusterVolumeSpec{},
 		Name:              "volCluster",
 		Driver:            "someCSI",
@@ -252,7 +253,7 @@ func TestCreateSwarmVolumeNotManager(t *testing.T) {
 		cluster: c,
 	}
 
-	volumeCreate := volume.CreateOptions{
+	volumeCreate := volume.CreateRequest{
 		ClusterVolumeSpec: &volume.ClusterVolumeSpec{},
 		Name:              "volCluster",
 		Driver:            "someCSI",
@@ -284,7 +285,7 @@ func TestCreateVolumeCluster(t *testing.T) {
 		cluster: c,
 	}
 
-	volumeCreate := volume.CreateOptions{
+	volumeCreate := volume.CreateRequest{
 		ClusterVolumeSpec: &volume.ClusterVolumeSpec{},
 		Name:              "volCluster",
 		Driver:            "someCSI",
@@ -333,7 +334,7 @@ func TestUpdateVolume(t *testing.T) {
 		cluster: c,
 	}
 
-	volumeUpdate := volume.UpdateOptions{
+	volumeUpdate := volumebackend.UpdateOptions{
 		Spec: &volume.ClusterVolumeSpec{},
 	}
 
@@ -362,7 +363,7 @@ func TestUpdateVolumeNoSwarm(t *testing.T) {
 		cluster: c,
 	}
 
-	volumeUpdate := volume.UpdateOptions{
+	volumeUpdate := volumebackend.UpdateOptions{
 		Spec: &volume.ClusterVolumeSpec{},
 	}
 
@@ -394,7 +395,7 @@ func TestUpdateVolumeNotFound(t *testing.T) {
 		cluster: c,
 	}
 
-	volumeUpdate := volume.UpdateOptions{
+	volumeUpdate := volumebackend.UpdateOptions{
 		Spec: &volume.ClusterVolumeSpec{},
 	}
 
@@ -679,7 +680,7 @@ func (c *fakeClusterBackend) GetVolume(nameOrID string) (volume.Volume, error) {
 	return volume.Volume{}, errdefs.NotFound(fmt.Errorf("volume %s not found", nameOrID))
 }
 
-func (c *fakeClusterBackend) GetVolumes(_ volume.ListOptions) ([]*volume.Volume, error) {
+func (c *fakeClusterBackend) GetVolumes(_ volumebackend.ListOptions) ([]*volume.Volume, error) {
 	if err := c.checkSwarm(); err != nil {
 		return nil, err
 	}
@@ -691,7 +692,7 @@ func (c *fakeClusterBackend) GetVolumes(_ volume.ListOptions) ([]*volume.Volume,
 	return volumes, nil
 }
 
-func (c *fakeClusterBackend) CreateVolume(volumeCreate volume.CreateOptions) (*volume.Volume, error) {
+func (c *fakeClusterBackend) CreateVolume(volumeCreate volume.CreateRequest) (*volume.Volume, error) {
 	if err := c.checkSwarm(); err != nil {
 		return nil, err
 	}
@@ -745,7 +746,7 @@ func (c *fakeClusterBackend) RemoveVolume(nameOrID string, force bool) error {
 	return nil
 }
 
-func (c *fakeClusterBackend) UpdateVolume(nameOrID string, version uint64, _ volume.UpdateOptions) error {
+func (c *fakeClusterBackend) UpdateVolume(nameOrID string, version uint64, _ volumebackend.UpdateOptions) error {
 	if err := c.checkSwarm(); err != nil {
 		return err
 	}

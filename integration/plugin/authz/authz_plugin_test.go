@@ -19,13 +19,11 @@ import (
 
 	"github.com/docker/go-connections/sockets"
 	"github.com/moby/go-archive"
-	containertypes "github.com/moby/moby/api/types/container"
 	eventtypes "github.com/moby/moby/api/types/events"
-	"github.com/moby/moby/api/types/image"
 	"github.com/moby/moby/client"
 	"github.com/moby/moby/v2/integration/internal/container"
+	"github.com/moby/moby/v2/internal/testutil/environment"
 	"github.com/moby/moby/v2/pkg/authorization"
-	"github.com/moby/moby/v2/testutil/environment"
 	"gotest.tools/v3/assert"
 	"gotest.tools/v3/skip"
 )
@@ -108,7 +106,7 @@ func TestAuthZPluginAllowRequest(t *testing.T) {
 	assertURIRecorded(t, ctrl.requestsURIs, "/containers/create")
 	assertURIRecorded(t, ctrl.requestsURIs, fmt.Sprintf("/containers/%s/start", cID))
 
-	_, err := c.ServerVersion(ctx)
+	_, err := c.ServerVersion(ctx, client.ServerVersionOptions{})
 	assert.NilError(t, err)
 	assert.Equal(t, 1, ctrl.versionReqCount)
 	assert.Equal(t, 1, ctrl.versionResCount)
@@ -139,7 +137,7 @@ func TestAuthZPluginTLS(t *testing.T) {
 	c, err := newTLSAPIClient(testDaemonHTTPSAddr, cacertPath, clientCertPath, clientKeyPath)
 	assert.NilError(t, err)
 
-	_, err = c.ServerVersion(ctx)
+	_, err = c.ServerVersion(ctx, client.ServerVersionOptions{})
 	assert.NilError(t, err)
 
 	assert.Equal(t, "client", ctrl.reqUser)
@@ -151,7 +149,7 @@ func newTLSAPIClient(host, cacertPath, certPath, keyPath string) (client.APIClie
 		KeepAlive: 30 * time.Second,
 		Timeout:   30 * time.Second,
 	}
-	return client.NewClientWithOpts(
+	return client.New(
 		client.WithTLSClientConfig(cacertPath, certPath, keyPath),
 		client.WithDialContext(dialer.DialContext),
 		client.WithHost(host))
@@ -167,7 +165,7 @@ func TestAuthZPluginDenyRequest(t *testing.T) {
 	c := d.NewClientT(t)
 
 	// Ensure command is blocked
-	_, err := c.ServerVersion(ctx)
+	_, err := c.ServerVersion(ctx, client.ServerVersionOptions{})
 	assert.Assert(t, err != nil)
 	assert.Equal(t, 1, ctrl.versionReqCount)
 	assert.Equal(t, 0, ctrl.versionResCount)
@@ -213,7 +211,7 @@ func TestAuthZPluginDenyResponse(t *testing.T) {
 	c := d.NewClientT(t)
 
 	// Ensure command is blocked
-	_, err := c.ServerVersion(ctx)
+	_, err := c.ServerVersion(ctx, client.ServerVersionOptions{})
 	assert.Assert(t, err != nil)
 	assert.Equal(t, 1, ctrl.versionReqCount)
 	assert.Equal(t, 1, ctrl.versionResCount)
@@ -273,27 +271,28 @@ func TestAuthZPluginAllowEventStream(t *testing.T) {
 	assertURIRecorded(t, ctrl.requestsURIs, fmt.Sprintf("/containers/%s/start", cID))
 }
 
-func systemTime(ctx context.Context, t *testing.T, client client.APIClient, testEnv *environment.Execution) time.Time {
+func systemTime(ctx context.Context, t *testing.T, apiClient client.APIClient, testEnv *environment.Execution) time.Time {
 	if testEnv.IsLocalDaemon() {
 		return time.Now()
 	}
 
-	info, err := client.Info(ctx)
+	result, err := apiClient.Info(ctx, client.InfoOptions{})
 	assert.NilError(t, err)
 
+	info := result.Info
 	dt, err := time.Parse(time.RFC3339Nano, info.SystemTime)
 	assert.NilError(t, err, "invalid time format in GET /info response")
 	return dt
 }
 
-func systemEventsSince(ctx context.Context, client client.APIClient, since string) (<-chan eventtypes.Message, <-chan error, func()) {
-	eventOptions := eventtypes.ListOptions{
+func systemEventsSince(ctx context.Context, apiClient client.APIClient, since string) (<-chan eventtypes.Message, <-chan error, func()) {
+	eventOptions := client.EventsListOptions{
 		Since: since,
 	}
 	ctx, cancel := context.WithCancel(ctx)
-	events, errs := client.Events(ctx, eventOptions)
+	result := apiClient.Events(ctx, eventOptions)
 
-	return events, errs, cancel
+	return result.Messages, result.Err, cancel
 }
 
 func TestAuthZPluginErrorResponse(t *testing.T) {
@@ -305,7 +304,7 @@ func TestAuthZPluginErrorResponse(t *testing.T) {
 	c := d.NewClientT(t)
 
 	// Ensure command is blocked
-	_, err := c.ServerVersion(ctx)
+	_, err := c.ServerVersion(ctx, client.ServerVersionOptions{})
 	assert.Assert(t, err != nil)
 	assert.Equal(t, fmt.Sprintf("Error response from daemon: plugin %s failed with error: %s: %s", testAuthZPlugin, authorization.AuthZApiResponse, errorMessage), err.Error())
 }
@@ -318,7 +317,7 @@ func TestAuthZPluginErrorRequest(t *testing.T) {
 	c := d.NewClientT(t)
 
 	// Ensure command is blocked
-	_, err := c.ServerVersion(ctx)
+	_, err := c.ServerVersion(ctx, client.ServerVersionOptions{})
 	assert.Assert(t, err != nil)
 	assert.Equal(t, fmt.Sprintf("Error response from daemon: plugin %s failed with error: %s: %s", testAuthZPlugin, authorization.AuthZApiRequest, errorMessage), err.Error())
 }
@@ -332,7 +331,7 @@ func TestAuthZPluginEnsureNoDuplicatePluginRegistration(t *testing.T) {
 
 	c := d.NewClientT(t)
 
-	_, err := c.ServerVersion(ctx)
+	_, err := c.ServerVersion(ctx, client.ServerVersionOptions{})
 	assert.NilError(t, err)
 
 	// assert plugin is only called once..
@@ -364,7 +363,7 @@ func TestAuthZPluginEnsureLoadImportWorking(t *testing.T) {
 
 	cID := container.Run(ctx, t, c)
 
-	responseReader, err := c.ContainerExport(ctx, cID)
+	responseReader, err := c.ContainerExport(ctx, cID, client.ContainerExportOptions{})
 	assert.NilError(t, err)
 	defer responseReader.Close()
 	file, err := os.Create(exportedImagePath)
@@ -402,7 +401,7 @@ func TestAuthzPluginEnsureContainerCopyToFrom(t *testing.T) {
 	c := d.NewClientT(t)
 
 	cID := container.Run(ctx, t, c)
-	defer c.ContainerRemove(ctx, cID, containertypes.RemoveOptions{Force: true})
+	defer c.ContainerRemove(ctx, cID, client.ContainerRemoveOptions{Force: true})
 
 	_, err = f.Seek(0, io.SeekStart)
 	assert.NilError(t, err)
@@ -416,12 +415,12 @@ func TestAuthzPluginEnsureContainerCopyToFrom(t *testing.T) {
 	dstDir, preparedArchive, err := archive.PrepareArchiveCopy(srcArchive, srcInfo, archive.CopyInfo{Path: "/test"})
 	assert.NilError(t, err)
 
-	err = c.CopyToContainer(ctx, cID, dstDir, preparedArchive, containertypes.CopyToContainerOptions{})
+	_, err = c.CopyToContainer(ctx, cID, client.CopyToContainerOptions{DestinationPath: dstDir, Content: preparedArchive})
 	assert.NilError(t, err)
 
-	rdr, _, err := c.CopyFromContainer(ctx, cID, "/test")
+	res, err := c.CopyFromContainer(ctx, cID, client.CopyFromContainerOptions{SourcePath: "/test"})
 	assert.NilError(t, err)
-	_, err = io.Copy(io.Discard, rdr)
+	_, err = io.Copy(io.Discard, res.Content)
 	assert.NilError(t, err)
 }
 
@@ -450,23 +449,23 @@ func imageLoad(ctx context.Context, apiClient client.APIClient, path string) err
 	if err != nil {
 		return err
 	}
-	defer response.Body.Close()
+	defer response.Close()
 	return nil
 }
 
-func imageImport(ctx context.Context, client client.APIClient, path string) error {
+func imageImport(ctx context.Context, apiClient client.APIClient, path string) error {
 	file, err := os.Open(path)
 	if err != nil {
 		return err
 	}
 	defer file.Close()
-	options := image.ImportOptions{}
+	options := client.ImageImportOptions{}
 	ref := ""
-	source := image.ImportSource{
+	source := client.ImageImportSource{
 		Source:     file,
 		SourceName: "-",
 	}
-	responseReader, err := client.ImageImport(ctx, source, ref, options)
+	responseReader, err := apiClient.ImageImport(ctx, source, ref, options)
 	if err != nil {
 		return err
 	}

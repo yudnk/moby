@@ -1,12 +1,11 @@
 package dockerfile
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"testing"
 
-	"github.com/moby/moby/api/types/build"
+	"github.com/moby/moby/v2/daemon/server/buildbackend"
 	"github.com/moby/sys/user"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
@@ -58,7 +57,7 @@ othergrp:x:6666:
 		expected  identity
 	}{
 		{
-			builder:   &Builder{options: &build.ImageBuildOptions{Platform: "linux"}},
+			builder:   &Builder{options: &buildbackend.BuildOptions{Platform: "linux"}},
 			name:      "UIDNoMap",
 			chownStr:  "1",
 			idMapping: unmapped,
@@ -66,7 +65,7 @@ othergrp:x:6666:
 			expected:  identity{UID: 1, GID: 1},
 		},
 		{
-			builder:   &Builder{options: &build.ImageBuildOptions{Platform: "linux"}},
+			builder:   &Builder{options: &buildbackend.BuildOptions{Platform: "linux"}},
 			name:      "UIDGIDNoMap",
 			chownStr:  "0:1",
 			idMapping: unmapped,
@@ -74,7 +73,7 @@ othergrp:x:6666:
 			expected:  identity{UID: 0, GID: 1},
 		},
 		{
-			builder:   &Builder{options: &build.ImageBuildOptions{Platform: "linux"}},
+			builder:   &Builder{options: &buildbackend.BuildOptions{Platform: "linux"}},
 			name:      "UIDWithMap",
 			chownStr:  "0",
 			idMapping: remapped,
@@ -82,7 +81,7 @@ othergrp:x:6666:
 			expected:  identity{UID: 100000, GID: 100000},
 		},
 		{
-			builder:   &Builder{options: &build.ImageBuildOptions{Platform: "linux"}},
+			builder:   &Builder{options: &buildbackend.BuildOptions{Platform: "linux"}},
 			name:      "UIDGIDWithMap",
 			chownStr:  "1:33",
 			idMapping: remapped,
@@ -90,7 +89,7 @@ othergrp:x:6666:
 			expected:  identity{UID: 100001, GID: 100033},
 		},
 		{
-			builder:   &Builder{options: &build.ImageBuildOptions{Platform: "linux"}},
+			builder:   &Builder{options: &buildbackend.BuildOptions{Platform: "linux"}},
 			name:      "UserNoMap",
 			chownStr:  "bin:5555",
 			idMapping: unmapped,
@@ -98,7 +97,7 @@ othergrp:x:6666:
 			expected:  identity{UID: 1, GID: 5555},
 		},
 		{
-			builder:   &Builder{options: &build.ImageBuildOptions{Platform: "linux"}},
+			builder:   &Builder{options: &buildbackend.BuildOptions{Platform: "linux"}},
 			name:      "GroupWithMap",
 			chownStr:  "0:unicorn",
 			idMapping: remapped,
@@ -106,7 +105,7 @@ othergrp:x:6666:
 			expected:  identity{UID: 100000, GID: 101002},
 		},
 		{
-			builder:   &Builder{options: &build.ImageBuildOptions{Platform: "linux"}},
+			builder:   &Builder{options: &buildbackend.BuildOptions{Platform: "linux"}},
 			name:      "UserOnlyWithMap",
 			chownStr:  "unicorn",
 			idMapping: remapped,
@@ -115,7 +114,7 @@ othergrp:x:6666:
 		},
 	} {
 		t.Run(testcase.name, func(t *testing.T) {
-			idPair, err := parseChownFlag(context.TODO(), testcase.builder, testcase.state, testcase.chownStr, contextDir, testcase.idMapping)
+			idPair, err := parseChownFlag(t.Context(), testcase.builder, testcase.state, testcase.chownStr, contextDir, testcase.idMapping)
 			assert.NilError(t, err, "Failed to parse chown flag: %q", testcase.chownStr)
 			assert.Check(t, is.DeepEqual(testcase.expected, idPair), "chown flag mapping failure")
 		})
@@ -131,7 +130,7 @@ othergrp:x:6666:
 		descr     string
 	}{
 		{
-			builder:   &Builder{options: &build.ImageBuildOptions{Platform: "linux"}},
+			builder:   &Builder{options: &buildbackend.BuildOptions{Platform: "linux"}},
 			name:      "BadChownFlagFormat",
 			chownStr:  "bob:1:555",
 			idMapping: unmapped,
@@ -139,7 +138,7 @@ othergrp:x:6666:
 			descr:     "invalid chown string format: bob:1:555",
 		},
 		{
-			builder:   &Builder{options: &build.ImageBuildOptions{Platform: "linux"}},
+			builder:   &Builder{options: &buildbackend.BuildOptions{Platform: "linux"}},
 			name:      "UserNoExist",
 			chownStr:  "bob",
 			idMapping: unmapped,
@@ -147,7 +146,7 @@ othergrp:x:6666:
 			descr:     "can't find uid for user bob: no such user: bob",
 		},
 		{
-			builder:   &Builder{options: &build.ImageBuildOptions{Platform: "linux"}},
+			builder:   &Builder{options: &buildbackend.BuildOptions{Platform: "linux"}},
 			name:      "GroupNoExist",
 			chownStr:  "root:bob",
 			idMapping: unmapped,
@@ -156,7 +155,7 @@ othergrp:x:6666:
 		},
 	} {
 		t.Run(testcase.name, func(t *testing.T) {
-			_, err := parseChownFlag(context.TODO(), testcase.builder, testcase.state, testcase.chownStr, contextDir, testcase.idMapping)
+			_, err := parseChownFlag(t.Context(), testcase.builder, testcase.state, testcase.chownStr, contextDir, testcase.idMapping)
 			assert.Check(t, is.Error(err, testcase.descr), "Expected error string doesn't match")
 		})
 	}

@@ -1,3 +1,5 @@
+<!-- This is a generated file; DO NOT EDIT. -->
+
 ## Container on a user-defined network with inter-container communication disabled, with a published port
 
 Equivalent to:
@@ -45,7 +47,7 @@ Most rules are the same as the network with [icc enabled][0]:
     	}
     
     	chain nat-OUTPUT {
-    		type nat hook output priority -100; policy accept;
+    		type nat hook output priority dstnat; policy accept;
     		ip daddr != 127.0.0.0/8 fib daddr type local counter jump nat-prerouting-and-output
     	}
     

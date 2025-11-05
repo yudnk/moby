@@ -1,14 +1,9 @@
 package client
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
-	"fmt"
-	"io"
 	"net/http"
-	"strings"
 	"testing"
 
 	cerrdefs "github.com/containerd/errdefs"
@@ -18,50 +13,40 @@ import (
 )
 
 func TestTaskInspectError(t *testing.T) {
-	client := &Client{
-		client: newMockClient(errorMock(http.StatusInternalServerError, "Server error")),
-	}
+	client, err := New(WithMockClient(errorMock(http.StatusInternalServerError, "Server error")))
+	assert.NilError(t, err)
 
-	_, _, err := client.TaskInspectWithRaw(context.Background(), "nothing")
+	_, err = client.TaskInspect(context.Background(), "nothing", TaskInspectOptions{})
 	assert.Check(t, is.ErrorType(err, cerrdefs.IsInternal))
 }
 
 func TestTaskInspectWithEmptyID(t *testing.T) {
-	client := &Client{
-		client: newMockClient(func(req *http.Request) (*http.Response, error) {
-			return nil, errors.New("should not make request")
-		}),
-	}
-	_, _, err := client.TaskInspectWithRaw(context.Background(), "")
+	client, err := New(WithMockClient(func(req *http.Request) (*http.Response, error) {
+		return nil, errors.New("should not make request")
+	}))
+	assert.NilError(t, err)
+	_, err = client.TaskInspect(context.Background(), "", TaskInspectOptions{})
 	assert.Check(t, is.ErrorType(err, cerrdefs.IsInvalidArgument))
 	assert.Check(t, is.ErrorContains(err, "value is empty"))
 
-	_, _, err = client.TaskInspectWithRaw(context.Background(), "    ")
+	_, err = client.TaskInspect(context.Background(), "    ", TaskInspectOptions{})
 	assert.Check(t, is.ErrorType(err, cerrdefs.IsInvalidArgument))
 	assert.Check(t, is.ErrorContains(err, "value is empty"))
 }
 
 func TestTaskInspect(t *testing.T) {
-	expectedURL := "/tasks/task_id"
-	client := &Client{
-		client: newMockClient(func(req *http.Request) (*http.Response, error) {
-			if !strings.HasPrefix(req.URL.Path, expectedURL) {
-				return nil, fmt.Errorf("Expected URL '%s', got '%s'", expectedURL, req.URL)
-			}
-			content, err := json.Marshal(swarm.Task{
-				ID: "task_id",
-			})
-			if err != nil {
-				return nil, err
-			}
-			return &http.Response{
-				StatusCode: http.StatusOK,
-				Body:       io.NopCloser(bytes.NewReader(content)),
-			}, nil
-		}),
-	}
-
-	taskInspect, _, err := client.TaskInspectWithRaw(context.Background(), "task_id")
+	const expectedURL = "/tasks/task_id"
+	client, err := New(WithMockClient(func(req *http.Request) (*http.Response, error) {
+		if err := assertRequest(req, http.MethodGet, expectedURL); err != nil {
+			return nil, err
+		}
+		return mockJSONResponse(http.StatusOK, nil, swarm.Task{
+			ID: "task_id",
+		})(req)
+	}))
 	assert.NilError(t, err)
-	assert.Check(t, is.Equal(taskInspect.ID, "task_id"))
+
+	result, err := client.TaskInspect(context.Background(), "task_id", TaskInspectOptions{})
+	assert.NilError(t, err)
+	assert.Check(t, is.Equal(result.Task.ID, "task_id"))
 }

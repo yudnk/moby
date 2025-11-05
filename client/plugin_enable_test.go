@@ -1,12 +1,8 @@
 package client
 
 import (
-	"bytes"
 	"context"
-	"fmt"
-	"io"
 	"net/http"
-	"strings"
 	"testing"
 
 	cerrdefs "github.com/containerd/errdefs"
@@ -15,40 +11,32 @@ import (
 )
 
 func TestPluginEnableError(t *testing.T) {
-	client := &Client{
-		client: newMockClient(errorMock(http.StatusInternalServerError, "Server error")),
-	}
+	client, err := New(WithMockClient(errorMock(http.StatusInternalServerError, "Server error")))
+	assert.NilError(t, err)
 
-	err := client.PluginEnable(context.Background(), "plugin_name", PluginEnableOptions{})
+	_, err = client.PluginEnable(context.Background(), "plugin_name", PluginEnableOptions{})
 	assert.Check(t, is.ErrorType(err, cerrdefs.IsInternal))
 
-	err = client.PluginEnable(context.Background(), "", PluginEnableOptions{})
+	_, err = client.PluginEnable(context.Background(), "", PluginEnableOptions{})
 	assert.Check(t, is.ErrorType(err, cerrdefs.IsInvalidArgument))
 	assert.Check(t, is.ErrorContains(err, "value is empty"))
 
-	err = client.PluginEnable(context.Background(), "    ", PluginEnableOptions{})
+	_, err = client.PluginEnable(context.Background(), "    ", PluginEnableOptions{})
 	assert.Check(t, is.ErrorType(err, cerrdefs.IsInvalidArgument))
 	assert.Check(t, is.ErrorContains(err, "value is empty"))
 }
 
 func TestPluginEnable(t *testing.T) {
-	expectedURL := "/plugins/plugin_name/enable"
+	const expectedURL = "/plugins/plugin_name/enable"
 
-	client := &Client{
-		client: newMockClient(func(req *http.Request) (*http.Response, error) {
-			if !strings.HasPrefix(req.URL.Path, expectedURL) {
-				return nil, fmt.Errorf("Expected URL '%s', got '%s'", expectedURL, req.URL)
-			}
-			if req.Method != http.MethodPost {
-				return nil, fmt.Errorf("expected POST method, got %s", req.Method)
-			}
-			return &http.Response{
-				StatusCode: http.StatusOK,
-				Body:       io.NopCloser(bytes.NewReader([]byte(""))),
-			}, nil
-		}),
-	}
+	client, err := New(WithMockClient(func(req *http.Request) (*http.Response, error) {
+		if err := assertRequest(req, http.MethodPost, expectedURL); err != nil {
+			return nil, err
+		}
+		return mockResponse(http.StatusOK, nil, "")(req)
+	}))
+	assert.NilError(t, err)
 
-	err := client.PluginEnable(context.Background(), "plugin_name", PluginEnableOptions{})
+	_, err = client.PluginEnable(context.Background(), "plugin_name", PluginEnableOptions{})
 	assert.NilError(t, err)
 }

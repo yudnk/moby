@@ -12,12 +12,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
 	"github.com/moby/moby/v2/integration-cli/checker"
 	"github.com/moby/moby/v2/integration-cli/cli"
-	"github.com/moby/moby/v2/testutil"
-	"github.com/moby/moby/v2/testutil/request"
+	"github.com/moby/moby/v2/internal/testutil"
+	"github.com/moby/moby/v2/internal/testutil/request"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 	"gotest.tools/v3/poll"
@@ -61,11 +60,11 @@ func (s *DockerAPISuite) TestExecAPICreateContainerPaused(c *testing.T) {
 
 	cli.DockerCmd(c, "pause", name)
 
-	apiClient, err := client.NewClientWithOpts(client.FromEnv)
+	apiClient, err := client.New(client.FromEnv)
 	assert.NilError(c, err)
 	defer apiClient.Close()
 
-	_, err = apiClient.ContainerExecCreate(testutil.GetContext(c), name, container.ExecOptions{
+	_, err = apiClient.ExecCreate(testutil.GetContext(c), name, client.ExecCreateOptions{
 		Cmd: []string{"true"},
 	})
 	assert.ErrorContains(c, err, "Container "+name+" is paused, unpause the container before exec", "Expected message when creating exec command with Container %s is paused", name)
@@ -125,17 +124,17 @@ func (s *DockerAPISuite) TestExecAPIStartWithDetach(c *testing.T) {
 
 	ctx := testutil.GetContext(c)
 
-	apiClient, err := client.NewClientWithOpts(client.FromEnv)
+	apiClient, err := client.New(client.FromEnv)
 	assert.NilError(c, err)
 	defer apiClient.Close()
 
-	createResp, err := apiClient.ContainerExecCreate(ctx, name, container.ExecOptions{
+	res, err := apiClient.ExecCreate(ctx, name, client.ExecCreateOptions{
 		Cmd:          []string{"true"},
 		AttachStderr: true,
 	})
 	assert.NilError(c, err)
 
-	_, body, err := request.Post(ctx, fmt.Sprintf("/exec/%s/start", createResp.ID), request.RawString(`{"Detach": true}`), request.JSON)
+	_, body, err := request.Post(ctx, fmt.Sprintf("/exec/%s/start", res.ID), request.RawString(`{"Detach": true}`), request.JSON)
 	assert.NilError(c, err)
 
 	b, err := request.ReadBody(body)

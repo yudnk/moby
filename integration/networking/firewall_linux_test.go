@@ -6,7 +6,8 @@ import (
 
 	"github.com/moby/moby/client"
 	"github.com/moby/moby/v2/integration/internal/testutils/networking"
-	"github.com/moby/moby/v2/testutil/request"
+	"github.com/moby/moby/v2/internal/testutil/daemon"
+	"github.com/moby/moby/v2/internal/testutil/request"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 )
@@ -15,7 +16,13 @@ const defaultFirewallBackend = "iptables"
 
 func TestInfoFirewallBackend(t *testing.T) {
 	ctx := setupTest(t)
-	c := testEnv.APIClient()
+
+	d := daemon.New(t)
+	d.StartWithBusybox(ctx, t)
+	t.Cleanup(func() { d.Stop(t) })
+
+	c := d.NewClientT(t)
+	t.Cleanup(func() { c.Close() })
 
 	expDriver := defaultFirewallBackend
 	if val := os.Getenv("DOCKER_FIREWALL_BACKEND"); val != "" {
@@ -24,8 +31,9 @@ func TestInfoFirewallBackend(t *testing.T) {
 	if !testEnv.IsRootless() && networking.FirewalldRunning() {
 		expDriver += "+firewalld"
 	}
-	info, err := c.Info(ctx)
+	result, err := c.Info(ctx, client.InfoOptions{})
 	assert.NilError(t, err)
+	info := result.Info
 	assert.Assert(t, info.FirewallBackend != nil, "expected firewall backend in info response")
 	t.Log("FirewallBackend: Driver:", info.FirewallBackend.Driver)
 	for _, kv := range info.FirewallBackend.Info {
@@ -36,8 +44,9 @@ func TestInfoFirewallBackend(t *testing.T) {
 	// Check FirewallBackend is omitted for API <= 1.48.
 	t.Run("api 1.48", func(t *testing.T) {
 		c148 := request.NewAPIClient(t, client.WithVersion("1.48"))
-		info148, err := c148.Info(ctx)
+		result, err := c148.Info(ctx, client.InfoOptions{})
 		assert.NilError(t, err)
+		info148 := result.Info
 		assert.Check(t, is.Nil(info148.FirewallBackend))
 	})
 }

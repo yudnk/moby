@@ -6,10 +6,12 @@ https://docs.docker.com/reference/api/engine/
 
 # Usage
 
-You use the library by constructing a client object using [NewClientWithOpts]
+You use the library by constructing a client object using [New]
 and calling methods on it. The client can be configured from environment
-variables by passing the [FromEnv] option, or configured manually by passing any
-of the other available [Opts].
+variables by passing the [FromEnv] option, and the [WithAPIVersionNegotiation]
+option to allow downgrading the API version used when connecting with an older
+daemon version. Other options cen be configured manually by passing any of
+the available [Opt] options.
 
 For example, to list running containers (the equivalent of "docker ps"):
 
@@ -18,24 +20,33 @@ For example, to list running containers (the equivalent of "docker ps"):
 	import (
 		"context"
 		"fmt"
+		"log"
 
-		"github.com/moby/moby/api/types/container"
 		"github.com/moby/moby/client"
 	)
 
 	func main() {
-		cli, err := client.NewClientWithOpts(client.FromEnv)
+		// Create a new client that handles common environment variables
+		// for configuration (DOCKER_HOST, DOCKER_API_VERSION), and does
+		// API-version negotiation to allow downgrading the API version
+		// when connecting with an older daemon version.
+		apiClient, err := client.New(client.FromEnv, client.WithAPIVersionNegotiation())
 		if err != nil {
-			panic(err)
+			log.Fatal(err)
 		}
 
-		containers, err := cli.ContainerList(context.Background(), container.ListOptions{})
+		// List all containers (both stopped and running).
+		result, err := apiClient.ContainerList(context.Background(), client.ContainerListOptions{
+			All: true,
+		})
 		if err != nil {
-			panic(err)
+			log.Fatal(err)
 		}
 
-		for _, ctr := range containers {
-			fmt.Printf("%s %s\n", ctr.ID, ctr.Image)
+		// Print each container's ID, status and the image it was created from.
+		fmt.Printf("%s  %-22s  %s\n", "ID", "STATUS", "IMAGE")
+		for _, ctr := range result.Items {
+			fmt.Printf("%s  %-22s  %s\n", ctr.ID, ctr.Status, ctr.Image)
 		}
 	}
 */
@@ -55,9 +66,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	cerrdefs "github.com/containerd/errdefs"
 	"github.com/docker/go-connections/sockets"
-	"github.com/moby/moby/api/types"
-	"github.com/moby/moby/api/types/versions"
+	"github.com/moby/moby/client/pkg/versions"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
@@ -91,22 +102,19 @@ import (
 // [Go stdlib]: https://github.com/golang/go/blob/6244b1946bc2101b01955468f1be502dbadd6807/src/net/http/transport.go#L558-L569
 const DummyHost = "api.moby.localhost"
 
-// DefaultAPIVersion is the highest REST API version supported by the client.
+// MaxAPIVersion is the highest REST API version supported by the client.
 // If API-version negotiation is enabled (see [WithAPIVersionNegotiation],
 // [Client.NegotiateAPIVersion]), the client may downgrade its API version.
 // Similarly, the [WithVersion] and [WithVersionFromEnv] allow overriding
 // the version.
 //
-// This version may be lower than the [api.DefaultVersion], which is the default
-// (and highest supported) version of the api library module used.
-const DefaultAPIVersion = "1.52"
+// This version may be lower than the version of the api library module used.
+const MaxAPIVersion = "1.52"
 
-// fallbackAPIVersion is the version to fallback to if API-version negotiation
-// fails. This version is the highest version of the API before API-version
-// negotiation was introduced. If negotiation fails (or no API version was
-// included in the API response), we assume the API server uses the most
-// recent version before negotiation was introduced.
-const fallbackAPIVersion = "1.24"
+// fallbackAPIVersion is the version to fall back to if API-version negotiation
+// fails. API versions below this version are not supported by the client,
+// and not considered when negotiating.
+const fallbackAPIVersion = "1.44"
 
 // Ensure that Client always implements APIClient.
 var _ APIClient = &Client{}
@@ -114,43 +122,13 @@ var _ APIClient = &Client{}
 // Client is the API client that performs all operations
 // against a docker server.
 type Client struct {
-	// scheme sets the scheme for the client
-	scheme string
-	// host holds the server address to connect to
-	host string
-	// proto holds the client protocol i.e. unix.
-	proto string
-	// addr holds the client address.
-	addr string
-	// basePath holds the path to prepend to the requests.
-	basePath string
-	// client used to send and receive http requests.
-	client *http.Client
-	// version of the server to talk to.
-	version string
-	// userAgent is the User-Agent header to use for HTTP requests. It takes
-	// precedence over User-Agent headers set in customHTTPHeaders, and other
-	// header variables. When set to an empty string, the User-Agent header
-	// is removed, and no header is sent.
-	userAgent *string
-	// custom HTTP headers configured by users.
-	customHTTPHeaders map[string]string
-	// manualOverride is set to true when the version was set by users.
-	manualOverride bool
-
-	// negotiateVersion indicates if the client should automatically negotiate
-	// the API version to use when making requests. API version negotiation is
-	// performed on the first request, after which negotiated is set to "true"
-	// so that subsequent requests do not re-negotiate.
-	negotiateVersion bool
+	clientConfig
 
 	// negotiated indicates that API version negotiation took place
 	negotiated atomic.Bool
 
 	// negotiateLock is used to single-flight the version negotiation process
 	negotiateLock sync.Mutex
-
-	traceOpts []otelhttp.Option
 
 	// When the client transport is an *http.Transport (default) we need to do some extra things (like closing idle connections).
 	// Store the original transport as the http.Client transport will be wrapped with tracing libs.
@@ -182,7 +160,14 @@ func CheckRedirect(_ *http.Request, via []*http.Request) error {
 	return ErrRedirect
 }
 
-// NewClientWithOpts initializes a new API client with a default HTTPClient, and
+// NewClientWithOpts initializes a new API client.
+//
+// Deprecated: use New. This function will be removed in the next release.
+func NewClientWithOpts(ops ...Opt) (*Client, error) {
+	return New(ops...)
+}
+
+// New initializes a new API client with a default HTTPClient, and
 // default API host and version. It also initializes the custom HTTP headers to
 // add to each request.
 //
@@ -192,11 +177,11 @@ func CheckRedirect(_ *http.Request, via []*http.Request) error {
 // itself with values from environment variables ([FromEnv]), and has automatic
 // API version negotiation enabled ([WithAPIVersionNegotiation]).
 //
-//	cli, err := client.NewClientWithOpts(
+//	cli, err := client.New(
 //		client.FromEnv,
 //		client.WithAPIVersionNegotiation(),
 //	)
-func NewClientWithOpts(ops ...Opt) (*Client, error) {
+func New(ops ...Opt) (*Client, error) {
 	hostURL, err := ParseHostURL(DefaultDockerHost)
 	if err != nil {
 		return nil, err
@@ -207,21 +192,23 @@ func NewClientWithOpts(ops ...Opt) (*Client, error) {
 		return nil, err
 	}
 	c := &Client{
-		host:    DefaultDockerHost,
-		version: DefaultAPIVersion,
-		client:  client,
-		proto:   hostURL.Scheme,
-		addr:    hostURL.Host,
-
-		traceOpts: []otelhttp.Option{
-			otelhttp.WithSpanNameFormatter(func(_ string, req *http.Request) string {
-				return req.Method + " " + req.URL.Path
-			}),
+		clientConfig: clientConfig{
+			host:    DefaultDockerHost,
+			version: MaxAPIVersion,
+			client:  client,
+			proto:   hostURL.Scheme,
+			addr:    hostURL.Host,
+			traceOpts: []otelhttp.Option{
+				otelhttp.WithSpanNameFormatter(func(_ string, req *http.Request) string {
+					return req.Method + " " + req.URL.Path
+				}),
+			},
 		},
 	}
+	cfg := &c.clientConfig
 
 	for _, op := range ops {
-		if err := op(c); err != nil {
+		if err := op(cfg); err != nil {
 			return nil, err
 		}
 	}
@@ -291,23 +278,13 @@ func (cli *Client) Close() error {
 // be negotiated when making the actual requests, and for which cases
 // we cannot do the negotiation lazily.
 func (cli *Client) checkVersion(ctx context.Context) error {
-	if !cli.manualOverride && cli.negotiateVersion && !cli.negotiated.Load() {
-		// Ensure exclusive write access to version and negotiated fields
-		cli.negotiateLock.Lock()
-		defer cli.negotiateLock.Unlock()
-
-		// May have been set during last execution of critical zone
-		if cli.negotiated.Load() {
-			return nil
-		}
-
-		ping, err := cli.Ping(ctx)
-		if err != nil {
-			return err
-		}
-		cli.negotiateAPIVersionPing(ping)
+	if cli.manualOverride || !cli.negotiateVersion || cli.negotiated.Load() {
+		return nil
 	}
-	return nil
+	_, err := cli.Ping(ctx, PingOptions{
+		NegotiateAPIVersion: true,
+	})
+	return err
 }
 
 // getAPIPath returns the versioned request path to call the API.
@@ -328,75 +305,27 @@ func (cli *Client) ClientVersion() string {
 	return cli.version
 }
 
-// NegotiateAPIVersion queries the API and updates the version to match the API
-// version. NegotiateAPIVersion downgrades the client's API version to match the
-// APIVersion if the ping version is lower than the default version. If the API
-// version reported by the server is higher than the maximum version supported
-// by the client, it uses the client's maximum version.
-//
-// If a manual override is in place, either through the "DOCKER_API_VERSION"
-// ([EnvOverrideAPIVersion]) environment variable, or if the client is initialized
-// with a fixed version ([WithVersion]), no negotiation is performed.
-//
-// If the API server's ping response does not contain an API version, or if the
-// client did not get a successful ping response, it assumes it is connected with
-// an old daemon that does not support API version negotiation, in which case it
-// downgrades to the latest version of the API before version negotiation was
-// added (1.24).
-func (cli *Client) NegotiateAPIVersion(ctx context.Context) {
-	if !cli.manualOverride {
-		// Avoid concurrent modification of version-related fields
-		cli.negotiateLock.Lock()
-		defer cli.negotiateLock.Unlock()
-
-		ping, err := cli.Ping(ctx)
-		if err != nil {
-			// FIXME(thaJeztah): Ping returns an error when failing to connect to the API; we should not swallow the error here, and instead returning it.
-			return
-		}
-		cli.negotiateAPIVersionPing(ping)
-	}
-}
-
-// NegotiateAPIVersionPing downgrades the client's API version to match the
-// APIVersion in the ping response. If the API version in pingResponse is higher
-// than the maximum version supported by the client, it uses the client's maximum
-// version.
-//
-// If a manual override is in place, either through the "DOCKER_API_VERSION"
-// ([EnvOverrideAPIVersion]) environment variable, or if the client is initialized
-// with a fixed version ([WithVersion]), no negotiation is performed.
-//
-// If the API server's ping response does not contain an API version, we assume
-// we are connected with an old daemon without API version negotiation support,
-// and downgrade to the latest version of the API before version negotiation was
-// added (1.24).
-func (cli *Client) NegotiateAPIVersionPing(pingResponse types.Ping) {
-	if !cli.manualOverride {
-		// Avoid concurrent modification of version-related fields
-		cli.negotiateLock.Lock()
-		defer cli.negotiateLock.Unlock()
-
-		cli.negotiateAPIVersionPing(pingResponse)
-	}
-}
-
-// negotiateAPIVersionPing queries the API and updates the version to match the
-// API version from the ping response.
-func (cli *Client) negotiateAPIVersionPing(pingResponse types.Ping) {
-	// default to the latest version before versioning headers existed
-	if pingResponse.APIVersion == "" {
-		pingResponse.APIVersion = fallbackAPIVersion
+// negotiateAPIVersion updates the version to match the API version from
+// the ping response. It falls back to the lowest version supported if the
+// API version is empty, or returns an error if the API version is lower than
+// the lowest supported API version, in which case the version is not modified.
+func (cli *Client) negotiateAPIVersion(pingVersion string) error {
+	pingVersion = strings.TrimPrefix(pingVersion, "v")
+	if pingVersion == "" {
+		// TODO(thaJeztah): consider returning an error on empty value or not falling back; see https://github.com/moby/moby/pull/51119#discussion_r2413148487
+		pingVersion = fallbackAPIVersion
+	} else if versions.LessThan(pingVersion, fallbackAPIVersion) {
+		return cerrdefs.ErrInvalidArgument.WithMessage(fmt.Sprintf("API version %s is not supported by this client: the minimum supported API version is %s", pingVersion, fallbackAPIVersion))
 	}
 
 	// if the client is not initialized with a version, start with the latest supported version
 	if cli.version == "" {
-		cli.version = DefaultAPIVersion
+		cli.version = MaxAPIVersion
 	}
 
 	// if server version is lower than the client version, downgrade
-	if versions.LessThan(pingResponse.APIVersion, cli.version) {
-		cli.version = pingResponse.APIVersion
+	if versions.LessThan(pingVersion, cli.version) {
+		cli.version = pingVersion
 	}
 
 	// Store the results, so that automatic API version negotiation (if enabled)
@@ -404,17 +333,12 @@ func (cli *Client) negotiateAPIVersionPing(pingResponse types.Ping) {
 	if cli.negotiateVersion {
 		cli.negotiated.Store(true)
 	}
+	return nil
 }
 
 // DaemonHost returns the host address used by the client
 func (cli *Client) DaemonHost() string {
 	return cli.host
-}
-
-// HTTPClient returns a copy of the HTTP client bound to the server
-func (cli *Client) HTTPClient() *http.Client {
-	c := *cli.client
-	return &c
 }
 
 // ParseHostURL parses a url string, validates the string is a host url, and

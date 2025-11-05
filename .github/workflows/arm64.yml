@@ -23,7 +23,7 @@ on:
   pull_request:
 
 env:
-  GO_VERSION: "1.24.6"
+  GO_VERSION: "1.25.3"
   TESTSTAT_VERSION: v0.1.25
   DESTDIR: ./build
   SETUP_BUILDX_VERSION: edge
@@ -89,7 +89,7 @@ jobs:
           targets: dev
           set: |
             *.cache-from=type=gha,scope=dev-arm64
-            *.cache-to=type=gha,scope=dev-arm64,mode=max
+            *.cache-to=type=gha,scope=dev-arm64
             *.output=type=cacheonly
 
   test-unit:
@@ -112,6 +112,9 @@ jobs:
           version: ${{ env.SETUP_BUILDX_VERSION }}
           driver-opts: image=${{ env.SETUP_BUILDKIT_IMAGE }}
           buildkitd-flags: --debug
+      -
+        name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
       -
         name: Build dev image
         uses: docker/bake-action@v6
@@ -162,7 +165,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
-          cache-dependency-path: vendor.sum
+          cache: false
       -
         name: Download reports
         uses: actions/download-artifact@v4
@@ -202,6 +205,9 @@ jobs:
           version: ${{ env.SETUP_BUILDX_VERSION }}
           driver-opts: image=${{ env.SETUP_BUILDKIT_IMAGE }}
           buildkitd-flags: --debug
+      -
+        name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
       -
         name: Build dev image
         uses: docker/bake-action@v6
@@ -262,7 +268,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
-          cache-dependency-path: vendor.sum
+          cache: false
       -
         name: Download reports
         uses: actions/download-artifact@v4

@@ -2,8 +2,6 @@ package swarm
 
 import (
 	"time"
-
-	"github.com/moby/moby/api/types/filters"
 )
 
 // TaskState represents the state of a task.
@@ -140,6 +138,17 @@ type DiscreteGenericResource struct {
 type ResourceRequirements struct {
 	Limits       *Limit     `json:",omitempty"`
 	Reservations *Resources `json:",omitempty"`
+
+	// Amount of swap in bytes - can only be used together with a memory limit
+	// -1 means unlimited
+	// a null pointer keeps the default behaviour of granting twice the memory
+	// amount in swap
+	SwapBytes *int64 `json:"SwapBytes,omitzero"`
+
+	// Tune container memory swappiness (0 to 100) - if not specified, defaults
+	// to the container OS's default - generally 60, or the value predefined in
+	// the image; set to -1 to unset a previously set value
+	MemorySwappiness *int64 `json:MemorySwappiness,omitzero"`
 }
 
 // Placement represents orchestration parameters.
@@ -222,9 +231,4 @@ type VolumeAttachment struct {
 	// Target, together with Source, indicates the Mount, as specified
 	// in the ContainerSpec, that this volume fulfills.
 	Target string `json:",omitempty"`
-}
-
-// TaskListOptions holds parameters to list tasks with.
-type TaskListOptions struct {
-	Filters filters.Args
 }

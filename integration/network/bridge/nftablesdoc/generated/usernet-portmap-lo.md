@@ -1,3 +1,5 @@
+<!-- This is a generated file; DO NOT EDIT. -->
+
 ## Container on a user-defined network, with a port published on a loopback address
 
 Adding a network running a container with a port mapped on a loopback address, equivalent to:
@@ -44,7 +46,7 @@ Most rules are the same as for a port published to a regular [host address][0]:
     	}
     
     	chain nat-OUTPUT {
-    		type nat hook output priority -100; policy accept;
+    		type nat hook output priority dstnat; policy accept;
     		ip daddr != 127.0.0.0/8 fib daddr type local counter jump nat-prerouting-and-output
     	}
     

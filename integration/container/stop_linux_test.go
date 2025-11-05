@@ -10,7 +10,6 @@ import (
 
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/moby/moby/api/pkg/stdcopy"
-	containertypes "github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
 	"github.com/moby/moby/v2/integration/internal/container"
 	"gotest.tools/v3/assert"
@@ -39,7 +38,8 @@ func TestStopContainerWithTimeoutCancel(t *testing.T) {
 	stoppedCh := make(chan error)
 	go func() {
 		sto := stopTimeout
-		stoppedCh <- apiClient.ContainerStop(ctxCancel, id, containertypes.StopOptions{Timeout: &sto})
+		_, err := apiClient.ContainerStop(ctxCancel, id, client.ContainerStopOptions{Timeout: &sto})
+		stoppedCh <- err
 	}()
 
 	poll.WaitOn(t, logsContains(ctx, apiClient, id, "received TERM"))
@@ -54,9 +54,9 @@ func TestStopContainerWithTimeoutCancel(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("timeout waiting for stop request to be cancelled")
 	}
-	inspect, err := apiClient.ContainerInspect(ctx, id)
+	inspect, err := apiClient.ContainerInspect(ctx, id, client.ContainerInspectOptions{})
 	assert.Check(t, err)
-	assert.Check(t, inspect.State.Running)
+	assert.Check(t, inspect.Container.State.Running)
 
 	// container should be stopped after stopTimeout is reached. The daemon.containerStop
 	// code is rather convoluted, and waits another 2 seconds for the container to
@@ -69,9 +69,9 @@ func TestStopContainerWithTimeoutCancel(t *testing.T) {
 }
 
 // logsContains verifies the container contains the given text in the log's stdout.
-func logsContains(ctx context.Context, client client.APIClient, containerID string, logString string) func(log poll.LogT) poll.Result {
+func logsContains(ctx context.Context, apiClient client.APIClient, containerID string, logString string) func(log poll.LogT) poll.Result {
 	return func(log poll.LogT) poll.Result {
-		logs, err := client.ContainerLogs(ctx, containerID, containertypes.LogsOptions{
+		logs, err := apiClient.ContainerLogs(ctx, containerID, client.ContainerLogsOptions{
 			ShowStdout: true,
 		})
 		if err != nil {

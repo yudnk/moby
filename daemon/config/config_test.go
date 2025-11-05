@@ -367,7 +367,7 @@ func TestValidateConfigurationErrors(t *testing.T) {
 			name: "with invalid log-level",
 			config: &Config{
 				CommonConfig: CommonConfig{
-					LogLevel: "foobar",
+					DaemonLogConfig: DaemonLogConfig{LogLevel: "foobar"},
 				},
 			},
 			expectedErr: "invalid logging level: foobar",
@@ -575,7 +575,7 @@ func TestValidateConfiguration(t *testing.T) {
 			field: "LogLevel",
 			config: &Config{
 				CommonConfig: CommonConfig{
-					LogLevel: "warn",
+					DaemonLogConfig: DaemonLogConfig{LogLevel: "warn"},
 				},
 			},
 		},
@@ -633,7 +633,7 @@ func TestValidateMinAPIVersion(t *testing.T) {
 		},
 		{
 			doc:   "current version",
-			input: DefaultAPIVersion,
+			input: MaxAPIVersion,
 		},
 	}
 
@@ -645,6 +645,26 @@ func TestValidateMinAPIVersion(t *testing.T) {
 			} else {
 				assert.Check(t, err)
 			}
+		})
+	}
+}
+
+func TestConfigDNS(t *testing.T) {
+	tests := []struct {
+		doc   string
+		input string
+	}{
+		{
+			doc:   "IPv6s with scope IDs",
+			input: `{"dns": ["::1%eth0", "::1%2"]}`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.doc, func(t *testing.T) {
+			var cfg Config
+			err := json.Unmarshal([]byte(tc.input), &cfg)
+			assert.Check(t, err == nil, "type: %T", err)
 		})
 	}
 }
@@ -664,6 +684,11 @@ func TestConfigInvalidDNS(t *testing.T) {
 			doc:         "multiple DNS, invalid IP-address",
 			input:       `{"dns": ["2.2.2.2", "1.1.1.1o"]}`,
 			expectedErr: `ParseAddr("1.1.1.1o"): unexpected character (at "o")`,
+		},
+		{
+			doc:         "IPv4 with scope ID",
+			input:       `{"dns": ["1.1.1.1%eth0"]}`,
+			expectedErr: `ParseAddr("1.1.1.1%eth0"): unexpected character (at "%eth0")`,
 		},
 	}
 

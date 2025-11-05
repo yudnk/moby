@@ -6,13 +6,11 @@ import (
 	"runtime"
 	"testing"
 
-	containertypes "github.com/moby/moby/api/types/container"
-	"github.com/moby/moby/api/types/image"
 	"github.com/moby/moby/client"
 	"github.com/moby/moby/v2/integration/internal/container"
-	"github.com/moby/moby/v2/testutil"
-	"github.com/moby/moby/v2/testutil/daemon"
-	"github.com/moby/moby/v2/testutil/fixtures/load"
+	"github.com/moby/moby/v2/internal/testutil"
+	"github.com/moby/moby/v2/internal/testutil/daemon"
+	"github.com/moby/moby/v2/internal/testutil/fixtures/load"
 	"gotest.tools/v3/assert"
 	"gotest.tools/v3/skip"
 )
@@ -67,7 +65,7 @@ func testMigrateSnapshotter(t *testing.T, graphdriver, snapshotter string) {
 	assert.Equal(t, info.Driver, graphdriver)
 	assert.Equal(t, info.Containers, 1)
 	assert.Equal(t, info.Images, allImages)
-	container.Remove(ctx, t, apiClient, containerID, containertypes.RemoveOptions{
+	container.Remove(ctx, t, apiClient, containerID, client.ContainerRemoveOptions{
 		Force: true,
 	})
 
@@ -86,7 +84,7 @@ func testMigrateSnapshotter(t *testing.T, graphdriver, snapshotter string) {
 		c.Config.Cmd = []string{"echo", "hello"}
 	})
 	assert.Equal(t, result.ExitCode, 0)
-	container.Remove(ctx, t, apiClient, result.ContainerID, containertypes.RemoveOptions{})
+	container.Remove(ctx, t, apiClient, result.ContainerID, client.ContainerRemoveOptions{})
 }
 
 func TestMigrateSaveLoad(t *testing.T) {
@@ -136,10 +134,10 @@ func TestMigrateSaveLoad(t *testing.T) {
 	rdr.Close()
 
 	// Delete all images
-	list, err := apiClient.ImageList(ctx, image.ListOptions{})
+	list, err := apiClient.ImageList(ctx, client.ImageListOptions{})
 	assert.NilError(t, err)
-	for _, i := range list {
-		_, err = apiClient.ImageRemove(ctx, i.ID, image.RemoveOptions{Force: true})
+	for _, i := range list.Items {
+		_, err = apiClient.ImageRemove(ctx, i.ID, client.ImageRemoveOptions{Force: true})
 		assert.NilError(t, err)
 	}
 
@@ -150,8 +148,8 @@ func TestMigrateSaveLoad(t *testing.T) {
 	// Import
 	lr, err := apiClient.ImageLoad(ctx, bytes.NewReader(buf.Bytes()), client.ImageLoadWithQuiet(true))
 	assert.NilError(t, err)
-	io.Copy(io.Discard, lr.Body)
-	lr.Body.Close()
+	io.Copy(io.Discard, lr)
+	lr.Close()
 
 	result := container.RunAttach(ctx, t, apiClient, func(c *container.TestContainerConfig) {
 		c.Name = "Migration-save-load-" + snapshotter
@@ -159,5 +157,5 @@ func TestMigrateSaveLoad(t *testing.T) {
 		c.Config.Cmd = []string{"echo", "hello"}
 	})
 	assert.Equal(t, result.ExitCode, 0)
-	container.Remove(ctx, t, apiClient, result.ContainerID, containertypes.RemoveOptions{})
+	container.Remove(ctx, t, apiClient, result.ContainerID, client.ContainerRemoveOptions{})
 }

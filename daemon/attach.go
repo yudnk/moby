@@ -10,6 +10,7 @@ import (
 	containertypes "github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/events"
 	"github.com/moby/moby/v2/daemon/container"
+	"github.com/moby/moby/v2/daemon/internal/stdcopymux"
 	"github.com/moby/moby/v2/daemon/internal/stream"
 	"github.com/moby/moby/v2/daemon/logger"
 	"github.com/moby/moby/v2/daemon/server/backend"
@@ -33,10 +34,10 @@ func (daemon *Daemon) ContainerAttach(prefixOrName string, req *backend.Containe
 	if err != nil {
 		return err
 	}
-	if ctr.IsPaused() {
+	if ctr.State.IsPaused() {
 		return errdefs.Conflict(fmt.Errorf("container %s is paused, unpause the container before attach", prefixOrName))
 	}
-	if ctr.IsRestarting() {
+	if ctr.State.IsRestarting() {
 		return errdefs.Conflict(fmt.Errorf("container %s is restarting, wait until the container is running", prefixOrName))
 	}
 
@@ -74,8 +75,8 @@ func (daemon *Daemon) ContainerAttach(prefixOrName string, req *backend.Containe
 	defer inStream.Close()
 
 	if multiplexed {
-		errStream = stdcopy.NewStdWriter(errStream, stdcopy.Stderr)
-		outStream = stdcopy.NewStdWriter(outStream, stdcopy.Stdout)
+		errStream = stdcopymux.NewStdWriter(errStream, stdcopy.Stderr)
+		outStream = stdcopymux.NewStdWriter(outStream, stdcopy.Stdout)
 	}
 
 	if cfg.UseStdin {
@@ -192,7 +193,7 @@ func (daemon *Daemon) containerAttach(ctr *container.Container, cfg *stream.Atta
 
 	if ctr.Config.StdinOnce && !ctr.Config.Tty {
 		// Wait for the container to stop before returning.
-		waitChan := ctr.Wait(context.Background(), containertypes.WaitConditionNotRunning)
+		waitChan := ctr.State.Wait(context.Background(), containertypes.WaitConditionNotRunning)
 		defer func() {
 			<-waitChan // Ignore returned exit code.
 		}()

@@ -1,7 +1,5 @@
 package events
 
-import "github.com/moby/moby/api/types/filters"
-
 // Type is used for event-types.
 type Type string
 
@@ -112,15 +110,6 @@ type Actor struct {
 
 // Message represents the information an event contains
 type Message struct {
-	// Deprecated: use Action instead.
-	// Information from JSONMessage.
-	// With data only in container events.
-	Status string `json:"status,omitempty"`
-	// Deprecated: use Actor.ID instead.
-	ID string `json:"id,omitempty"`
-	// Deprecated: use Actor.Attributes["image"] instead.
-	From string `json:"from,omitempty"`
-
 	Type   Type
 	Action Action
 	Actor  Actor
@@ -129,11 +118,4 @@ type Message struct {
 
 	Time     int64 `json:"time,omitempty"`
 	TimeNano int64 `json:"timeNano,omitempty"`
-}
-
-// ListOptions holds parameters to filter events with.
-type ListOptions struct {
-	Since   string
-	Until   string
-	Filters filters.Args
 }

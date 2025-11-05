@@ -6,6 +6,7 @@ import (
 
 	dockerspec "github.com/moby/docker-image-spec/specs-go/v1"
 	"github.com/moby/moby/api/types/image"
+	"github.com/moby/moby/v2/daemon/internal/compat"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
@@ -40,12 +41,12 @@ func TestInspectResponse(t *testing.T) {
 			expected:     `{"AttachStderr":false,"AttachStdin":false,"AttachStdout":false,"Cmd":["/bin/sh"],"Domainname":"","Entrypoint":null,"Env":null,"Hostname":"","Image":"","Labels":null,"OnBuild":null,"OpenStdin":false,"StdinOnce":false,"StopSignal":"SIGQUIT","Tty":false,"User":"","Volumes":null,"WorkingDir":""}`,
 		},
 		{
-			doc: "api >= v1.50",
+			doc: "api v1.50 - v1.51",
 			cfg: &ocispec.ImageConfig{
 				Cmd:        []string{"/bin/sh"},
 				StopSignal: "SIGQUIT",
 			},
-			legacyConfig: legacyConfigFields["current"],
+			legacyConfig: legacyConfigFields["v1.50-v1.51"],
 			expected:     `{"Cmd":["/bin/sh"],"Entrypoint":null,"Env":null,"Labels":null,"OnBuild":null,"StopSignal":"SIGQUIT","User":"","Volumes":null,"WorkingDir":""}`,
 		},
 	}
@@ -59,10 +60,11 @@ func TestInspectResponse(t *testing.T) {
 					ImageConfig: *tc.cfg,
 				}
 			}
-			out, err := json.Marshal(&inspectCompatResponse{
-				InspectResponse: imgInspect,
-				legacyConfig:    tc.legacyConfig,
-			})
+			legacyConfigResponse := compat.Wrap(imgInspect, compat.WithExtraFields(map[string]any{
+				"Config": tc.legacyConfig,
+			}))
+
+			out, err := json.Marshal(&legacyConfigResponse)
 			assert.NilError(t, err)
 
 			var outMap struct{ Config json.RawMessage }

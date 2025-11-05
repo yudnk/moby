@@ -18,10 +18,10 @@ import (
 	"github.com/distribution/reference"
 	"github.com/moby/buildkit/util/attestation"
 	dockerspec "github.com/moby/docker-image-spec/specs-go/v1"
-	"github.com/moby/moby/api/types/filters"
 	imagetypes "github.com/moby/moby/api/types/image"
+	"github.com/moby/moby/v2/daemon/internal/filters"
 	"github.com/moby/moby/v2/daemon/internal/timestamp"
-	"github.com/moby/moby/v2/daemon/server/backend"
+	"github.com/moby/moby/v2/daemon/server/imagebackend"
 	"github.com/moby/moby/v2/errdefs"
 	"github.com/opencontainers/go-digest"
 	"github.com/opencontainers/image-spec/identity"
@@ -62,7 +62,7 @@ func (r byCreated) Less(i, j int) bool { return r[i].Created < r[j].Created }
 //
 // TODO(thaJeztah): verify behavior of `RepoDigests` and `RepoTags` for images without (untagged) or multiple tags; see https://github.com/moby/moby/issues/43861
 // TODO(thaJeztah): verify "Size" vs "VirtualSize" in images; see https://github.com/moby/moby/issues/43862
-func (i *ImageService) Images(ctx context.Context, opts imagetypes.ListOptions) ([]*imagetypes.Summary, error) {
+func (i *ImageService) Images(ctx context.Context, opts imagebackend.ListOptions) ([]*imagetypes.Summary, error) {
 	if err := opts.Filters.Validate(acceptedImageFilterTags); err != nil {
 		return nil, err
 	}
@@ -375,7 +375,7 @@ func (i *ImageService) multiPlatformSummary(ctx context.Context, img c8dimages.I
 // It also returns the chainIDs of all the layers of the image (including all its platforms).
 // All return values will be nil if the image should be skipped.
 func (i *ImageService) imageSummary(ctx context.Context, img c8dimages.Image, platformMatcher platforms.MatchComparer,
-	opts imagetypes.ListOptions, tagsByDigest map[digest.Digest][]string,
+	opts imagebackend.ListOptions, tagsByDigest map[digest.Digest][]string,
 ) (*imagetypes.Summary, *multiPlatformSummary, error) {
 	summary, err := i.multiPlatformSummary(ctx, img, platformMatcher)
 	if err != nil {
@@ -497,13 +497,13 @@ type imageFilterFunc func(image c8dimages.Image) bool
 func (i *ImageService) setupFilters(ctx context.Context, imageFilters filters.Args) (filterFunc imageFilterFunc, outErr error) {
 	var fltrs []imageFilterFunc
 	err := imageFilters.WalkValues("before", func(value string) error {
-		img, err := i.GetImage(ctx, value, backend.GetImageOpts{})
+		img, err := i.GetImage(ctx, value, imagebackend.GetImageOpts{})
 		if err != nil {
 			return err
 		}
 		if img != nil && img.Created != nil {
 			fltrs = append(fltrs, func(candidate c8dimages.Image) bool {
-				cand, err := i.GetImage(ctx, candidate.Name, backend.GetImageOpts{})
+				cand, err := i.GetImage(ctx, candidate.Name, imagebackend.GetImageOpts{})
 				if err != nil {
 					return false
 				}
@@ -517,13 +517,13 @@ func (i *ImageService) setupFilters(ctx context.Context, imageFilters filters.Ar
 	}
 
 	err = imageFilters.WalkValues("since", func(value string) error {
-		img, err := i.GetImage(ctx, value, backend.GetImageOpts{})
+		img, err := i.GetImage(ctx, value, imagebackend.GetImageOpts{})
 		if err != nil {
 			return err
 		}
 		if img != nil && img.Created != nil {
 			fltrs = append(fltrs, func(candidate c8dimages.Image) bool {
-				cand, err := i.GetImage(ctx, candidate.Name, backend.GetImageOpts{})
+				cand, err := i.GetImage(ctx, candidate.Name, imagebackend.GetImageOpts{})
 				if err != nil {
 					return false
 				}

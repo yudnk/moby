@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"reflect"
-	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -18,7 +17,7 @@ import (
 	"github.com/moby/moby/client"
 	"github.com/moby/moby/v2/integration-cli/cli"
 	"github.com/moby/moby/v2/integration-cli/cli/build"
-	"github.com/moby/moby/v2/testutil"
+	"github.com/moby/moby/v2/internal/testutil"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 	"gotest.tools/v3/icmd"
@@ -165,10 +164,18 @@ func (s *DockerCLIExecSuite) TestExecTTYCloseStdin(c *testing.T) {
 	stdinRw, err := cmd.StdinPipe()
 	assert.NilError(c, err)
 
-	stdinRw.Write([]byte("test"))
-	stdinRw.Close()
+	_, err = stdinRw.Write([]byte("test"))
+	assert.Check(c, err)
+	_ = stdinRw.Close()
 
-	out, _, err := runCommandWithOutput(cmd)
+	res := icmd.RunCmd(icmd.Cmd{
+		Command: cmd.Args,
+		Env:     cmd.Env,
+		Dir:     cmd.Dir,
+		Stdin:   cmd.Stdin,
+		Stdout:  cmd.Stdout,
+	})
+	out, err := res.Combined(), res.Error
 	assert.NilError(c, err, out)
 
 	out = cli.DockerCmd(c, "top", "exec_tty_stdin").Combined()
@@ -193,10 +200,16 @@ func (s *DockerCLIExecSuite) TestExecTTYWithoutStdin(c *testing.T) {
 		}
 
 		expected := "the input device is not a TTY"
-		if runtime.GOOS == "windows" {
-			expected += ".  If you are using mintty, try prefixing the command with 'winpty'"
-		}
-		if out, _, err := runCommandWithOutput(cmd); err == nil {
+
+		res := icmd.RunCmd(icmd.Cmd{
+			Command: cmd.Args,
+			Env:     cmd.Env,
+			Dir:     cmd.Dir,
+			Stdin:   cmd.Stdin,
+			Stdout:  cmd.Stdout,
+		})
+		out, err := res.Combined(), res.Error
+		if err == nil {
 			errChan <- errors.New("exec should have failed")
 			return
 		} else if !strings.Contains(out, expected) {
@@ -359,11 +372,11 @@ func (s *DockerCLIExecSuite) TestExecInspectID(c *testing.T) {
 	}
 
 	// But we should still be able to query the execID
-	apiClient, err := client.NewClientWithOpts(client.FromEnv)
+	apiClient, err := client.New(client.FromEnv)
 	assert.NilError(c, err)
 	defer apiClient.Close()
 
-	_, err = apiClient.ContainerExecInspect(testutil.GetContext(c), execID)
+	_, err = apiClient.ExecInspect(testutil.GetContext(c), execID, client.ExecInspectOptions{})
 	assert.NilError(c, err)
 
 	// Now delete the container and then an 'inspect' on the exec should
@@ -371,7 +384,7 @@ func (s *DockerCLIExecSuite) TestExecInspectID(c *testing.T) {
 	res := cli.DockerCmd(c, "rm", "-f", id)
 	assert.Equal(c, res.ExitCode, 0, "error removing container: %s", res.Combined())
 
-	_, err = apiClient.ContainerExecInspect(testutil.GetContext(c), execID)
+	_, err = apiClient.ExecInspect(testutil.GetContext(c), execID, client.ExecInspectOptions{})
 	assert.ErrorContains(c, err, "No such exec instance")
 }
 
@@ -478,7 +491,7 @@ func (s *DockerCLIExecSuite) TestExecWithImageUser(c *testing.T) {
 	// Not applicable on Windows
 	testRequires(c, DaemonIsLinux)
 	const name = "testbuilduser"
-	buildImageSuccessfully(c, name, build.WithDockerfile(`FROM busybox
+	cli.BuildCmd(c, name, build.WithDockerfile(`FROM busybox
 		RUN echo 'dockerio:x:1001:1001::/bin:/bin/false' >> /etc/passwd
 		USER dockerio`))
 	cli.DockerCmd(c, "run", "-d", "--name", "dockerioexec", name, "top")

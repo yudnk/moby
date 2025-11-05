@@ -14,18 +14,17 @@ import (
 	"github.com/moby/moby/v2/daemon/libnetwork/ipamutils"
 	"github.com/moby/moby/v2/daemon/libnetwork/netlabel"
 	"github.com/moby/moby/v2/daemon/libnetwork/options"
-	"github.com/moby/moby/v2/internal/testutils/netnsutils"
+	"github.com/moby/moby/v2/internal/testutil/netnsutils"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 )
 
 func getTestEnv(t *testing.T, opts ...[]NetworkOption) (*Controller, []*Network) {
-	const netType = "bridge"
 	c, err := New(
 		context.Background(),
 		config.OptionDataDir(t.TempDir()),
-		config.OptionDriverConfig(netType, map[string]any{
-			netlabel.GenericData: options.Generic{"EnableIPForwarding": true},
+		config.OptionBridgeConfig(bridge.Configuration{
+			EnableIPForwarding: true,
 		}),
 		config.OptionDefaultAddressPoolConfig(ipamutils.GetLocalScopeDefaultNetworks()),
 	)
@@ -49,7 +48,7 @@ func getTestEnv(t *testing.T, opts ...[]NetworkOption) (*Controller, []*Network)
 			}),
 		}
 		newOptions = append(newOptions, opt...)
-		n, err := c.NewNetwork(context.Background(), netType, name, "", newOptions...)
+		n, err := c.NewNetwork(context.Background(), bridge.NetworkType, name, "", newOptions...)
 		if err != nil {
 			t.Fatal(err)
 		}

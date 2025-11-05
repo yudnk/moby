@@ -6,13 +6,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/moby/moby/api/types/filters"
 	swarmtypes "github.com/moby/moby/api/types/swarm"
 	"github.com/moby/moby/client"
 	"github.com/moby/moby/v2/integration/internal/swarm"
-	"github.com/moby/moby/v2/testutil/daemon"
-	"github.com/moby/moby/v2/testutil/fixtures/plugin"
-	"github.com/moby/moby/v2/testutil/registry"
+	"github.com/moby/moby/v2/internal/testutil/daemon"
+	"github.com/moby/moby/v2/internal/testutil/fixtures/plugin"
+	"github.com/moby/moby/v2/internal/testutil/registry"
 	"gotest.tools/v3/assert"
 	"gotest.tools/v3/poll"
 	"gotest.tools/v3/skip"
@@ -36,19 +35,19 @@ func TestServicePlugin(t *testing.T) {
 	apiclient := d.NewClientT(t)
 	err := plugin.Create(ctx, apiclient, repo)
 	assert.NilError(t, err)
-	r, err := apiclient.PluginPush(ctx, repo, "")
+	r, err := apiclient.PluginPush(ctx, repo, client.PluginPushOptions{})
 	assert.NilError(t, err)
 	_, err = io.Copy(io.Discard, r)
 	assert.NilError(t, err)
-	err = apiclient.PluginRemove(ctx, repo, client.PluginRemoveOptions{})
+	_, err = apiclient.PluginRemove(ctx, repo, client.PluginRemoveOptions{})
 	assert.NilError(t, err)
 	err = plugin.Create(ctx, apiclient, repo2)
 	assert.NilError(t, err)
-	r, err = apiclient.PluginPush(ctx, repo2, "")
+	r, err = apiclient.PluginPush(ctx, repo2, client.PluginPushOptions{})
 	assert.NilError(t, err)
 	_, err = io.Copy(io.Discard, r)
 	assert.NilError(t, err)
-	err = apiclient.PluginRemove(ctx, repo2, client.PluginRemoveOptions{})
+	_, err = apiclient.PluginRemove(ctx, repo2, client.PluginRemoveOptions{})
 	assert.NilError(t, err)
 	d.Stop(t)
 
@@ -68,15 +67,15 @@ func TestServicePlugin(t *testing.T) {
 
 	// test that environment variables are passed from plugin service to plugin instance
 	service := d1.GetService(ctx, t, id)
-	tasks := d1.GetServiceTasks(ctx, t, service.Spec.Annotations.Name, filters.Arg("runtime", "plugin"))
+	tasks := d1.GetServiceTasksWithFilters(ctx, t, service.Spec.Annotations.Name, make(client.Filters).Add("runtime", "plugin"))
 	if len(tasks) == 0 {
 		t.Log("No tasks found for plugin service")
 		t.Fail()
 	}
-	p, _, err := d1.NewClientT(t).PluginInspectWithRaw(ctx, name)
+	res, err := d1.NewClientT(t).PluginInspect(ctx, name, client.PluginInspectOptions{})
 	assert.NilError(t, err, "Error inspecting service plugin")
 	found := false
-	for _, env := range p.Settings.Env {
+	for _, env := range res.Plugin.Settings.Env {
 		assert.Equal(t, strings.HasPrefix(env, "baz"), false, "Environment variable entry %q is invalid and should not be present", "baz")
 		if strings.HasPrefix(env, "foo=") {
 			found = true

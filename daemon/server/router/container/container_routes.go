@@ -1,12 +1,14 @@
 package container
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -14,11 +16,11 @@ import (
 	"github.com/containerd/platforms"
 	"github.com/moby/moby/api/types"
 	"github.com/moby/moby/api/types/container"
-	"github.com/moby/moby/api/types/filters"
 	"github.com/moby/moby/api/types/mount"
 	"github.com/moby/moby/api/types/network"
-	"github.com/moby/moby/api/types/versions"
+	"github.com/moby/moby/v2/daemon/internal/filters"
 	"github.com/moby/moby/v2/daemon/internal/runconfig"
+	"github.com/moby/moby/v2/daemon/internal/versions"
 	"github.com/moby/moby/v2/daemon/libnetwork/netlabel"
 	networkSettings "github.com/moby/moby/v2/daemon/network"
 	"github.com/moby/moby/v2/daemon/server/backend"
@@ -70,8 +72,13 @@ func (c *containerRouter) postCommit(ctx context.Context, w http.ResponseWriter,
 		return errdefs.InvalidParameter(err)
 	}
 
+	var noPause bool
+	if r.Form.Has("pause") && !httputils.BoolValue(r, "pause") {
+		noPause = true
+	}
+
 	imgID, err := c.backend.CreateImageFromContainer(ctx, r.Form.Get("container"), &backend.CreateImageConfig{
-		Pause:   httputils.BoolValueOrDefault(r, "pause", true), // TODO(dnephin): remove pause arg, and always pause in backend
+		NoPause: noPause,
 		Tag:     ref,
 		Author:  r.Form.Get("author"),
 		Comment: r.Form.Get("comment"),
@@ -94,7 +101,7 @@ func (c *containerRouter) getContainersJSON(ctx context.Context, w http.Response
 		return err
 	}
 
-	config := &container.ListOptions{
+	config := &backend.ContainerListOptions{
 		All:     httputils.BoolValue(r, "all"),
 		Size:    httputils.BoolValue(r, "size"),
 		Since:   r.Form.Get("since"),
@@ -186,7 +193,7 @@ func (c *containerRouter) getContainersLogs(ctx context.Context, w http.Response
 	}
 
 	containerName := vars["name"]
-	logsConfig := &container.LogsOptions{
+	logsConfig := &backend.ContainerLogsOptions{
 		Follow:     httputils.BoolValue(r, "follow"),
 		Timestamps: httputils.BoolValue(r, "timestamps"),
 		Since:      r.Form.Get("since"),
@@ -254,7 +261,7 @@ func (c *containerRouter) postContainersStop(ctx context.Context, w http.Respons
 	}
 
 	var (
-		options container.StopOptions
+		options backend.ContainerStopOptions
 		version = httputils.VersionFromContext(ctx)
 	)
 	if versions.GreaterThanOrEqualTo(version, "1.42") {
@@ -296,7 +303,7 @@ func (c *containerRouter) postContainersRestart(ctx context.Context, w http.Resp
 	}
 
 	var (
-		options container.StopOptions
+		options backend.ContainerStopOptions
 		version = httputils.VersionFromContext(ctx)
 	)
 	if versions.GreaterThanOrEqualTo(version, "1.42") {
@@ -460,11 +467,6 @@ func (c *containerRouter) postContainerUpdate(ctx context.Context, w http.Respon
 		updateConfig.PidsLimit = nil
 	}
 
-	if versions.GreaterThanOrEqualTo(httputils.VersionFromContext(ctx), "1.42") {
-		// Ignore KernelMemory removed in API 1.42.
-		updateConfig.KernelMemory = 0
-	}
-
 	if updateConfig.PidsLimit != nil && *updateConfig.PidsLimit <= 0 {
 		// Both `0` and `-1` are accepted to set "unlimited" when updating.
 		// Historically, any negative value was accepted, so treat them as
@@ -497,8 +499,12 @@ func (c *containerRouter) postContainersCreate(ctx context.Context, w http.Respo
 
 	name := r.Form.Get("name")
 
+	// Use a tee-reader to allow reading the body for legacy fields.
+	var requestBody bytes.Buffer
+	rdr := io.TeeReader(r.Body, &requestBody)
+
 	// TODO(thaJeztah): do we prefer [backend.ContainerCreateConfig] here?
-	req, err := runconfig.DecodeCreateRequest(r.Body, c.backend.RawSysInfo())
+	req, err := runconfig.DecodeCreateRequest(rdr, c.backend.RawSysInfo())
 	if err != nil {
 		return err
 	}
@@ -523,11 +529,6 @@ func (c *containerRouter) postContainersCreate(ctx context.Context, w http.Respo
 
 	version := httputils.VersionFromContext(ctx)
 
-	// When using API 1.24 and under, the client is responsible for removing the container
-	if versions.LessThan(version, "1.25") {
-		hostConfig.AutoRemove = false
-	}
-
 	if versions.LessThan(version, "1.40") {
 		// Ignore BindOptions.NonRecursive because it was added in API 1.40.
 		for _, m := range hostConfig.Mounts {
@@ -535,9 +536,6 @@ func (c *containerRouter) postContainersCreate(ctx context.Context, w http.Respo
 				bo.NonRecursive = false
 			}
 		}
-
-		// Ignore KernelMemoryTCP because it was added in API 1.40.
-		hostConfig.KernelMemoryTCP = 0
 
 		// Older clients (API < 1.40) expects the default to be shareable, make them happy
 		if hostConfig.IpcMode.IsEmpty() {
@@ -591,8 +589,6 @@ func (c *containerRouter) postContainersCreate(ctx context.Context, w http.Respo
 	}
 
 	if versions.GreaterThanOrEqualTo(version, "1.42") {
-		// Ignore KernelMemory removed in API 1.42.
-		hostConfig.KernelMemory = 0
 		for _, m := range hostConfig.Mounts {
 			if o := m.VolumeOptions; o != nil && m.Type != mount.TypeVolume {
 				return errdefs.InvalidParameter(fmt.Errorf("VolumeOptions must not be specified on mount type %q", m.Type))
@@ -672,15 +668,28 @@ func (c *containerRouter) postContainersCreate(ctx context.Context, w http.Respo
 	if warn := handleVolumeDriverBC(version, hostConfig); warn != "" {
 		warnings = append(warnings, warn)
 	}
-	if warn, err := handleMACAddressBC(config, hostConfig, networkingConfig, version); err != nil {
-		return err
-	} else if warn != "" {
-		warnings = append(warnings, warn)
+	if versions.LessThan(version, "1.52") {
+		var legacyConfig struct {
+			// Mac Address of the container.
+			//
+			// MacAddress field is deprecated since API v1.44. Use EndpointSettings.MacAddress instead.
+			MacAddress network.HardwareAddr `json:",omitempty"`
+		}
+		_ = json.Unmarshal(requestBody.Bytes(), &legacyConfig)
+		if warn, err := handleMACAddressBC(hostConfig, networkingConfig, version, legacyConfig.MacAddress); err != nil {
+			return err
+		} else if warn != "" {
+			warnings = append(warnings, warn)
+		}
 	}
 
 	if warn, err := handleSysctlBC(hostConfig, networkingConfig, version); err != nil {
 		return err
 	} else if warn != "" {
+		warnings = append(warnings, warn)
+	}
+
+	if warn := handlePortBindingsBC(hostConfig, version); warn != "" {
 		warnings = append(warnings, warn)
 	}
 
@@ -737,16 +746,14 @@ func handleVolumeDriverBC(version string, hostConfig *container.HostConfig) (war
 // handleMACAddressBC takes care of backward-compatibility for the container-wide MAC address by mutating the
 // networkingConfig to set the endpoint-specific MACAddress field introduced in API v1.44. It returns a warning message
 // or an error if the container-wide field was specified for API >= v1.44.
-func handleMACAddressBC(config *container.Config, hostConfig *container.HostConfig, networkingConfig *network.NetworkingConfig, version string) (string, error) {
-	deprecatedMacAddress := config.MacAddress //nolint:staticcheck // ignore SA1019: field is deprecated, but still used on API < v1.44.
-
+func handleMACAddressBC(hostConfig *container.HostConfig, networkingConfig *network.NetworkingConfig, version string, deprecatedMacAddress network.HardwareAddr) (string, error) {
 	// For older versions of the API, migrate the container-wide MAC address to EndpointsConfig.
 	if versions.LessThan(version, "1.44") {
-		if deprecatedMacAddress == "" {
+		if len(deprecatedMacAddress) == 0 {
 			// If a MAC address is supplied in EndpointsConfig, discard it because the old API
 			// would have ignored it.
 			for _, ep := range networkingConfig.EndpointsConfig {
-				ep.MacAddress = ""
+				ep.MacAddress = nil
 			}
 			return "", nil
 		}
@@ -763,9 +770,14 @@ func handleMACAddressBC(config *container.Config, hostConfig *container.HostConf
 	}
 
 	// The container-wide MacAddress parameter is deprecated and should now be specified in EndpointsConfig.
-	if deprecatedMacAddress == "" {
+	if len(deprecatedMacAddress) == 0 {
 		return "", nil
 	}
+
+	if versions.GreaterThanOrEqualTo(version, "1.52") {
+		return "", errdefs.InvalidParameter(errors.New("container-wide MAC address no longer supported; use endpoint-specific MAC address instead"))
+	}
+
 	var warning string
 	if hostConfig.NetworkMode.IsBridge() || hostConfig.NetworkMode.IsUserDefined() {
 		ep, err := epConfigForNetMode(version, hostConfig.NetworkMode, networkingConfig)
@@ -774,14 +786,13 @@ func handleMACAddressBC(config *container.Config, hostConfig *container.HostConf
 		}
 		// ep is the endpoint that needs the container-wide MAC address; migrate the address
 		// to it, or bail out if there's a mismatch.
-		if ep.MacAddress == "" {
+		if len(ep.MacAddress) == 0 {
 			ep.MacAddress = deprecatedMacAddress
-		} else if ep.MacAddress != deprecatedMacAddress {
+		} else if !slices.Equal(ep.MacAddress, deprecatedMacAddress) {
 			return "", errdefs.InvalidParameter(errors.New("the container-wide MAC address must match the endpoint-specific MAC address for the main network, or be left empty"))
 		}
 	}
 	warning = "The container-wide MacAddress field is now deprecated. It should be specified in EndpointsConfig instead."
-	config.MacAddress = "" //nolint:staticcheck // ignore SA1019: field is deprecated, but still used on API < v1.44.
 
 	return warning, nil
 }
@@ -872,6 +883,49 @@ func handleSysctlBC(
 	}
 
 	return warning, nil
+}
+
+// handlePortBindingsBC handles backward-compatibility for empty port bindings.
+//
+// Before Engine v29.0, an empty list of port bindings for a container port was
+// treated as if a PortBinding with an unspecified IP address and HostPort was
+// provided. The daemon was doing this backfilling on ContainerStart.
+//
+// Preserve this behavior for older API versions but emit a warning for API
+// v1.52 and drop that behavior for newer API versions.
+//
+// See https://github.com/moby/moby/pull/50710#discussion_r2315840899 for more
+// context.
+func handlePortBindingsBC(hostConfig *container.HostConfig, version string) string {
+	var emptyPBs []string
+
+	for port, bindings := range hostConfig.PortBindings {
+		if len(bindings) > 0 {
+			continue
+		}
+		if versions.GreaterThan(version, "1.52") && len(bindings) == 0 {
+			// Starting with API 1.53, no backfilling is done. An empty slice
+			// of port bindings is treated as "no port bindings" by the daemon,
+			// but it still needs to backfill empty slices when loading the
+			// on-disk state for containers created by older versions of the
+			// Engine. Drop the PortBindings entry to ensure that no backfilling
+			// will happen when restarting the daemon.
+			delete(hostConfig.PortBindings, port)
+			continue
+		}
+
+		if versions.Equal(version, "1.52") {
+			emptyPBs = append(emptyPBs, port.String())
+		}
+
+		hostConfig.PortBindings[port] = []network.PortBinding{{}}
+	}
+
+	if len(emptyPBs) > 0 {
+		return fmt.Sprintf("Following container port(s) have an empty list of port-bindings: %s. Starting with API 1.53, such bindings will be discarded.", strings.Join(emptyPBs, ", "))
+	}
+
+	return ""
 }
 
 // epConfigForNetMode finds, or creates, an entry in netConfig.EndpointsConfig

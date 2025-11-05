@@ -14,6 +14,7 @@ import (
 	"github.com/containerd/log"
 	"github.com/moby/moby/v2/daemon/libnetwork/etchosts"
 	"github.com/moby/moby/v2/daemon/libnetwork/osl"
+	"github.com/moby/moby/v2/daemon/libnetwork/scope"
 	"github.com/moby/moby/v2/daemon/libnetwork/types"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -36,27 +37,34 @@ func (sb *Sandbox) processOptions(options ...SandboxOption) {
 // Sandbox provides the control over the network container entity.
 // It is a one to one mapping with the container.
 type Sandbox struct {
-	id                 string
-	containerID        string
-	config             containerConfig
-	extDNS             []extDNSEntry
-	osSbox             *osl.Namespace
-	controller         *Controller
-	resolver           *Resolver
-	resolverOnce       sync.Once
+	id              string
+	containerID     string
+	config          containerConfig
+	extDNS          []extDNSEntry
+	osSbox          *osl.Namespace
+	controller      *Controller
+	resolver        *Resolver
+	resolverOnce    sync.Once
+	dbIndex         uint64
+	dbExists        bool
+	isStub          bool
+	inDelete        bool
+	ingress         bool
+	ndotsSet        bool
+	oslTypes        []osl.SandboxType // slice of properties of this sandbox
+	loadBalancerNID string            // NID that this SB is a load balancer for
+	mu              sync.Mutex
+
+	// joinLeaveMu is required as well as mu to modify the following fields,
+	// acquire joinLeaveMu first, and keep it at-least until gateway changes
+	// have been applied following updates to endpoints.
+	//
+	// mu is required to access these fields.
+	joinLeaveMu        sync.Mutex
 	endpoints          []*Endpoint
 	epPriority         map[string]int
 	populatedEndpoints map[string]struct{}
-	joinLeaveMu        sync.Mutex
-	dbIndex            uint64
-	dbExists           bool
-	isStub             bool
-	inDelete           bool
-	ingress            bool
-	ndotsSet           bool
-	oslTypes           []osl.SandboxType // slice of properties of this sandbox
-	loadBalancerNID    string            // NID that this SB is a load balancer for
-	mu                 sync.Mutex
+
 	// This mutex is used to serialize service related operation for an endpoint
 	// The lock is here because the endpoint is saved into the store so is not unique
 	service sync.Mutex
@@ -73,7 +81,7 @@ type hostsPathConfig struct {
 
 type extraHost struct {
 	name string
-	IP   string
+	IP   netip.Addr
 }
 
 // These are the container configs used to customize container /etc/resolv.conf file.
@@ -312,30 +320,75 @@ func (sb *Sandbox) addEndpoint(ep *Endpoint) {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
 
-	l := len(sb.endpoints)
-	i := sort.Search(l, func(j int) bool {
+	i := sort.Search(len(sb.endpoints), func(j int) bool {
 		return ep.Less(sb.endpoints[j])
 	})
-
-	sb.endpoints = append(sb.endpoints, nil)
-	copy(sb.endpoints[i+1:], sb.endpoints[i:])
-	sb.endpoints[i] = ep
+	sb.endpoints = slices.Insert(sb.endpoints, i, ep)
 }
 
-func (sb *Sandbox) removeEndpoint(ep *Endpoint) {
+func (sb *Sandbox) updateGwPriorityOrdering(ep *Endpoint) {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
 
-	sb.removeEndpointRaw(ep)
+	sb.endpoints = slices.DeleteFunc(sb.endpoints, func(other *Endpoint) bool { return other.id == ep.id })
+	i := sort.Search(len(sb.endpoints), func(j int) bool {
+		return ep.Less(sb.endpoints[j])
+	})
+	sb.endpoints = slices.Insert(sb.endpoints, i, ep)
 }
 
-func (sb *Sandbox) removeEndpointRaw(ep *Endpoint) {
-	for i, e := range sb.endpoints {
-		if e == ep {
-			sb.endpoints = append(sb.endpoints[:i], sb.endpoints[i+1:]...)
-			return
+func (sb *Sandbox) populateNetworkResources(ctx context.Context, ep *Endpoint) (retErr error) {
+	ctx, span := otel.Tracer("").Start(ctx, "libnetwork.Sandbox.populateNetworkResources", trace.WithAttributes(
+		attribute.String("endpoint.Name", ep.Name())))
+	defer span.End()
+
+	if err := sb.populateNetworkResourcesOS(ctx, ep); err != nil {
+		return err
+	}
+
+	// Populate DNS records.
+	n := ep.getNetwork()
+	if !n.getController().isAgent() {
+		if !n.getController().isSwarmNode() || n.Scope() != scope.Swarm || !n.driverIsMultihost() {
+			n.updateSvcRecord(context.WithoutCancel(ctx), ep, true)
 		}
 	}
+
+	if err := ep.addDriverInfoToCluster(); err != nil {
+		return err
+	}
+	defer func() {
+		if retErr != nil {
+			if e := ep.deleteDriverInfoFromCluster(); e != nil {
+				log.G(ctx).WithError(e).Error("Could not delete endpoint state from cluster on join failure")
+			}
+		}
+	}()
+
+	// Load balancing endpoints should never have a default gateway nor
+	// should they alter the status of a network's default gateway
+	if !ep.loadBalancer || sb.ingress {
+		if sb.needDefaultGW() {
+			if sb.getEndpointInGWNetwork() == nil {
+				// sb.populateNetworkResources() will be called recursively for the new
+				// gateway endpoint. So, it'll set the resolver's forwarding policy.
+				return sb.setupDefaultGW()
+			}
+		} else if err := sb.clearDefaultGW(); err != nil {
+			log.G(ctx).WithFields(log.Fields{
+				"error": err,
+				"sid":   sb.ID(),
+				"cid":   sb.ContainerID(),
+			}).Warn("Failure while disconnecting sandbox from gateway network")
+		}
+
+		// Enable upstream forwarding if the sandbox gained external connectivity.
+		if sb.resolver != nil {
+			sb.resolver.SetForwardingPolicy(sb.hasExternalAccess())
+		}
+	}
+
+	return nil
 }
 
 func (sb *Sandbox) GetEndpoint(id string) *Endpoint {
@@ -564,62 +617,6 @@ func (sb *Sandbox) DisableService() error {
 	if len(failedEps) > 0 {
 		return fmt.Errorf("failed to disable service on sandbox:%s, for endpoints %s", sb.ID(), strings.Join(failedEps, ","))
 	}
-	return nil
-}
-
-func (sb *Sandbox) clearNetworkResources(origEp *Endpoint) error {
-	ep := sb.GetEndpoint(origEp.id)
-	if ep == nil {
-		return fmt.Errorf("could not find the sandbox endpoint data for endpoint %s",
-			origEp.id)
-	}
-
-	sb.mu.Lock()
-	osSbox := sb.osSbox
-	inDelete := sb.inDelete
-	sb.mu.Unlock()
-	if osSbox != nil {
-		releaseOSSboxResources(osSbox, ep)
-	}
-
-	sb.mu.Lock()
-	delete(sb.populatedEndpoints, ep.ID())
-
-	if len(sb.endpoints) == 0 {
-		// sb.endpoints should never be empty and this is unexpected error condition
-		// We log an error message to note this down for debugging purposes.
-		log.G(context.TODO()).Errorf("No endpoints in sandbox while trying to remove endpoint %s", ep.Name())
-		sb.mu.Unlock()
-		return nil
-	}
-
-	if !slices.Contains(sb.endpoints, ep) {
-		log.G(context.TODO()).Warnf("Endpoint %s has already been deleted", ep.Name())
-		sb.mu.Unlock()
-		return nil
-	}
-
-	gwepBefore4, gwepBefore6 := selectGatewayEndpoint(sb.endpoints)
-	sb.removeEndpointRaw(ep)
-	gwepAfter4, gwepAfter6 := selectGatewayEndpoint(sb.endpoints)
-	delete(sb.epPriority, ep.ID())
-
-	sb.mu.Unlock()
-
-	if (gwepAfter4 != nil && gwepBefore4 != gwepAfter4) || (gwepAfter6 != nil && gwepBefore6 != gwepAfter6) {
-		if err := sb.updateGateway(gwepAfter4, gwepAfter6); err != nil {
-			return fmt.Errorf("updating gateway endpoint: %w", err)
-		}
-	}
-
-	// Only update the store if we did not come here as part of
-	// sandbox delete. If we came here as part of delete then do
-	// not bother updating the store. The sandbox object will be
-	// deleted anyway
-	if !inDelete {
-		return sb.storeUpdate(context.TODO())
-	}
-
 	return nil
 }
 

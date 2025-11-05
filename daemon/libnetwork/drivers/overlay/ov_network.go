@@ -15,11 +15,11 @@ import (
 	"sync"
 
 	"github.com/containerd/log"
+	"github.com/moby/moby/v2/daemon/internal/netiputil"
 	"github.com/moby/moby/v2/daemon/libnetwork/driverapi"
 	"github.com/moby/moby/v2/daemon/libnetwork/drivers/overlay/overlayutils"
 	"github.com/moby/moby/v2/daemon/libnetwork/internal/countmap"
 	"github.com/moby/moby/v2/daemon/libnetwork/internal/hashable"
-	"github.com/moby/moby/v2/daemon/libnetwork/internal/netiputil"
 	"github.com/moby/moby/v2/daemon/libnetwork/netlabel"
 	"github.com/moby/moby/v2/daemon/libnetwork/nlwrap"
 	"github.com/moby/moby/v2/daemon/libnetwork/ns"
@@ -82,14 +82,6 @@ func init() {
 	runtime.LockOSThread()
 }
 
-func (d *driver) NetworkAllocate(id string, option map[string]string, ipV4Data, ipV6Data []driverapi.IPAMData) (map[string]string, error) {
-	return nil, types.NotImplementedErrorf("not implemented")
-}
-
-func (d *driver) NetworkFree(id string) error {
-	return types.NotImplementedErrorf("not implemented")
-}
-
 func (d *driver) CreateNetwork(ctx context.Context, id string, option map[string]any, nInfo driverapi.NetworkInfo, ipV4Data, ipV6Data []driverapi.IPAMData) error {
 	if id == "" {
 		return errors.New("invalid network id")
@@ -123,7 +115,7 @@ func (d *driver) CreateNetwork(ctx context.Context, id string, option map[string
 	if !ok {
 		return errors.New("no VNI provided")
 	}
-	log.G(context.TODO()).Debugf("overlay: Received vxlan IDs: %s", vnisOpt)
+	log.G(ctx).Debugf("overlay: Received vxlan IDs: %s", vnisOpt)
 	var err error
 	vnis, err = overlayutils.AppendVNIList(vnis, vnisOpt)
 	if err != nil {

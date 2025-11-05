@@ -21,6 +21,7 @@ import (
 	"github.com/moby/buildkit/session"
 	"github.com/moby/buildkit/solver"
 	"github.com/moby/buildkit/solver/errdefs"
+	"github.com/moby/buildkit/util/cachedigest"
 	"github.com/moby/buildkit/util/estargz"
 	"github.com/moby/buildkit/util/flightcontrol"
 	"github.com/moby/buildkit/util/imageutil"
@@ -45,6 +46,7 @@ type puller struct {
 	Ref            string
 	SessionManager *session.Manager
 	layerLimit     *int
+	checksum       digest.Digest
 	vtx            solver.Vertex
 	ResolverType
 	store sourceresolver.ResolveImageConfigOptStore
@@ -81,7 +83,7 @@ func mainManifestKey(desc ocispecs.Descriptor, platform ocispecs.Platform, layer
 	if err != nil {
 		return "", err
 	}
-	return digest.FromBytes(dt), nil
+	return cachedigest.FromBytes(dt, cachedigest.TypeJSON)
 }
 
 func (p *puller) CacheKey(ctx context.Context, g session.Group, index int) (cacheKey string, imgDigest string, cacheOpts solver.CacheOpts, cacheDone bool, err error) {
@@ -127,6 +129,10 @@ func (p *puller) CacheKey(ctx context.Context, g session.Group, index int) (cach
 		p.manifest, err = p.PullManifests(ctx, getResolver)
 		if err != nil {
 			return struct{}{}, err
+		}
+
+		if p.checksum != "" && p.manifest.MainManifestDesc.Digest != p.checksum {
+			return struct{}{}, errors.Errorf("image digest %s for %s does not match expected checksum %s", p.manifest.MainManifestDesc.Digest, p.Ref, p.checksum)
 		}
 
 		if ll := p.layerLimit; ll != nil {
@@ -292,7 +298,7 @@ func cacheKeyFromConfig(dt []byte, layerLimit *int) (digest.Digest, error) {
 		if layerLimit != nil {
 			return "", errors.Wrap(err, "failed to parse image config")
 		}
-		return digest.FromBytes(dt), nil // digest of config
+		return cachedigest.FromBytes(dt, cachedigest.TypeJSON) // digest of config
 	}
 	if layerLimit != nil {
 		l := *layerLimit

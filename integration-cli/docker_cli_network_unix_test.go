@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"strings"
 	"testing"
@@ -25,9 +26,9 @@ import (
 	"github.com/moby/moby/v2/daemon/libnetwork/nlwrap"
 	"github.com/moby/moby/v2/integration-cli/cli"
 	"github.com/moby/moby/v2/integration-cli/daemon"
+	"github.com/moby/moby/v2/internal/testutil"
+	testdaemon "github.com/moby/moby/v2/internal/testutil/daemon"
 	"github.com/moby/moby/v2/pkg/plugins"
-	"github.com/moby/moby/v2/testutil"
-	testdaemon "github.com/moby/moby/v2/testutil/daemon"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 	"gotest.tools/v3/assert"
@@ -479,7 +480,7 @@ func (s *DockerCLINetworkSuite) TestDockerInspectMultipleNetworksIncludingNonexi
 	result := cli.Docker(cli.Args("network", "inspect", "host", "nonexistent"))
 	result.Assert(c, icmd.Expected{
 		ExitCode: 1,
-		Err:      "Error: No such network: nonexistent",
+		Err:      "Error response from daemon: network nonexistent not found",
 		Out:      "host",
 	})
 
@@ -493,7 +494,7 @@ func (s *DockerCLINetworkSuite) TestDockerInspectMultipleNetworksIncludingNonexi
 	result = cli.Docker(cli.Args("network", "inspect", "nonexistent"))
 	result.Assert(c, icmd.Expected{
 		ExitCode: 1,
-		Err:      "Error: No such network: nonexistent",
+		Err:      "Error response from daemon: network nonexistent not found",
 		Out:      "[]",
 	})
 
@@ -502,7 +503,7 @@ func (s *DockerCLINetworkSuite) TestDockerInspectMultipleNetworksIncludingNonexi
 	result = cli.Docker(cli.Args("network", "inspect", "nonexistent", "host"))
 	result.Assert(c, icmd.Expected{
 		ExitCode: 1,
-		Err:      "Error: No such network: nonexistent",
+		Err:      "Error response from daemon: network nonexistent not found",
 		Out:      "host",
 	})
 
@@ -573,10 +574,8 @@ func (s *DockerNetworkSuite) TestDockerNetworkConnectDisconnect(c *testing.T) {
 	assert.Equal(c, len(nr.Containers), 1)
 
 	// check if container IP matches network inspect
-	ip, _, err := net.ParseCIDR(nr.Containers[containerID].IPv4Address)
-	assert.NilError(c, err)
 	containerIP := findContainerIP(c, "test", "test")
-	assert.Equal(c, ip.String(), containerIP)
+	assert.Equal(c, nr.Containers[containerID].IPv4Address.Addr().String(), containerIP)
 
 	// disconnect container from the network
 	cli.DockerCmd(c, "network", "disconnect", "test", containerID)
@@ -686,8 +685,8 @@ func (s *DockerNetworkSuite) TestDockerNetworkNullIPAMDriver(c *testing.T) {
 	nr := getNetworkResource(c, "test000")
 	assert.Equal(c, nr.IPAM.Driver, "null")
 	assert.Equal(c, len(nr.IPAM.Config), 1)
-	assert.Equal(c, nr.IPAM.Config[0].Subnet, "0.0.0.0/0")
-	assert.Equal(c, nr.IPAM.Config[0].Gateway, "")
+	assert.Equal(c, nr.IPAM.Config[0].Subnet, netip.MustParsePrefix("0.0.0.0/0"))
+	assert.Assert(c, !nr.IPAM.Config[0].Gateway.IsValid())
 }
 
 func (s *DockerNetworkSuite) TestDockerNetworkInspectDefault(c *testing.T) {
@@ -744,9 +743,9 @@ func (s *DockerNetworkSuite) TestDockerNetworkInspectCustomSpecified(c *testing.
 	assert.Equal(c, nr.EnableIPv6, true)
 	assert.Equal(c, nr.IPAM.Driver, "default")
 	assert.Equal(c, len(nr.IPAM.Config), 2)
-	assert.Equal(c, nr.IPAM.Config[0].Subnet, "172.28.0.0/16")
-	assert.Equal(c, nr.IPAM.Config[0].IPRange, "172.28.5.0/24")
-	assert.Equal(c, nr.IPAM.Config[0].Gateway, "172.28.5.254")
+	assert.Equal(c, nr.IPAM.Config[0].Subnet, netip.MustParsePrefix("172.28.0.0/16"))
+	assert.Equal(c, nr.IPAM.Config[0].IPRange, netip.MustParsePrefix("172.28.5.0/24"))
+	assert.Equal(c, nr.IPAM.Config[0].Gateway, netip.MustParseAddr("172.28.5.254"))
 	assert.Equal(c, nr.Internal, false)
 	cli.DockerCmd(c, "network", "rm", "br0")
 	assertNwNotAvailable(c, "br0")
@@ -1045,9 +1044,6 @@ func (s *DockerCLINetworkSuite) TestInspectAPIMultipleNetworks(c *testing.T) {
 	err := json.Unmarshal(body, &inspectCurrent)
 	assert.NilError(c, err)
 	assert.Equal(c, len(inspectCurrent.NetworkSettings.Networks), 3)
-
-	bridge := inspectCurrent.NetworkSettings.Networks["bridge"]
-	assert.Equal(c, bridge.IPAddress, inspectCurrent.NetworkSettings.IPAddress)
 }
 
 func connectContainerToNetworks(t *testing.T, d *daemon.Daemon, cName string, nws []string) {
@@ -1506,12 +1502,16 @@ func (s *DockerNetworkSuite) TestDockerNetworkConnectWithAliasOnDefaultNetworks(
 	testRequires(c, DaemonIsLinux, NotUserNamespace)
 
 	defaults := []string{"bridge", "host", "none"}
-	out := cli.DockerCmd(c, "run", "-d", "--net=none", "busybox", "top").Stdout()
-	containerID := strings.TrimSpace(out)
+	cID := cli.DockerCmd(c, "run", "-d", "--net=none", "busybox", "top").Stdout()
+	cID = strings.TrimSpace(cID)
 	for _, nw := range defaults {
-		res, _, err := dockerCmdWithError("network", "connect", "--alias", "alias"+nw, nw, containerID)
-		assert.ErrorContains(c, err, "")
-		assert.Assert(c, is.Contains(res, "network-scoped alias is supported only for containers in user defined networks"))
+		c.Run(nw, func(t *testing.T) {
+			out, _, err := dockerCmdWithError("network", "connect", "--alias", "alias"+nw, nw, cID)
+			assert.Check(c, err != nil, "out: %s", out)
+
+			// TODO(thaJeztah): this validation should be on the daemon side (and already is?): https://github.com/moby/moby/blob/5856ec5348ccacf430f8b17fe8a6e30c579a7817/daemon/container_operations.go#L528-L539
+			assert.Assert(t, is.Contains(out, "network-scoped aliases are only supported for user-defined networks"))
+		})
 	}
 }
 
@@ -1561,12 +1561,15 @@ func (s *DockerCLINetworkSuite) TestUserDefinedNetworkConnectDisconnectAlias(c *
 
 	// verify the alias option is rejected when running on predefined network
 	out, _, err := dockerCmdWithError("run", "--rm", "--name=any", "--net-alias=any", "busybox:glibc", "true")
-	assert.Assert(c, err != nil, "out: %s", out)
-	assert.Assert(c, is.Contains(out, "network-scoped alias is supported only for containers in user defined networks"))
+	assert.Check(c, err != nil, "out: %s", out)
+	// TODO(thaJeztah): this validation should be on the daemon side (and already is?): https://github.com/moby/moby/blob/5856ec5348ccacf430f8b17fe8a6e30c579a7817/daemon/container_operations.go#L528-L539
+	assert.Assert(c, is.Contains(out, "network-scoped aliases are only supported for user-defined networks"))
 	// verify the alias option is rejected when connecting to predefined network
 	out, _, err = dockerCmdWithError("network", "connect", "--alias=any", "bridge", "first")
-	assert.Assert(c, err != nil, "out: %s", out)
-	assert.Assert(c, is.Contains(out, "network-scoped alias is supported only for containers in user defined networks"))
+	assert.Check(c, err != nil, "out: %s", out)
+
+	// TODO(thaJeztah): this validation should be on the daemon side (and already is?): https://github.com/moby/moby/blob/5856ec5348ccacf430f8b17fe8a6e30c579a7817/daemon/container_operations.go#L528-L539
+	assert.Assert(c, is.Contains(out, "network-scoped aliases are only supported for user-defined networks"))
 }
 
 func (s *DockerCLINetworkSuite) TestUserDefinedNetworkConnectivity(c *testing.T) {
@@ -1597,7 +1600,7 @@ func (s *DockerCLINetworkSuite) TestEmbeddedDNSInvalidInput(c *testing.T) {
 	cli.DockerCmd(c, "network", "create", "-d", "bridge", "nw1")
 
 	// Sending garbage to embedded DNS shouldn't crash the daemon
-	cli.DockerCmd(c, "run", "-i", "--net=nw1", "--name=c1", "debian:bookworm-slim", "bash", "-c", "echo InvalidQuery > /dev/udp/127.0.0.11/53")
+	cli.DockerCmd(c, "run", "-i", "--net=nw1", "--name=c1", "debian:trixie-slim", "bash", "-c", "echo InvalidQuery > /dev/udp/127.0.0.11/53")
 }
 
 func (s *DockerCLINetworkSuite) TestDockerNetworkConnectFailsNoInspectChange(c *testing.T) {
@@ -1736,9 +1739,9 @@ func (s *DockerNetworkSuite) TestDockerNetworkValidateIP(c *testing.T) {
 	verifyIPAddresses(c, "mynet0", "mynet", "172.28.99.88", "2001:db8:1234::9988")
 
 	_, _, err = dockerCmdWithError("run", "--net=mynet", "--ip", "mynet_ip", "--ip6", "2001:db8:1234::9999", "busybox", "top")
-	assert.ErrorContains(c, err, "invalid IPv4 address")
+	assert.ErrorContains(c, err, "unable to parse IP")
 	_, _, err = dockerCmdWithError("run", "--net=mynet", "--ip", "172.28.99.99", "--ip6", "mynet_ip6", "busybox", "top")
-	assert.ErrorContains(c, err, "invalid IPv6 address")
+	assert.ErrorContains(c, err, "unable to parse IP")
 
 	// This is a case of IPv4 address to `--ip6`
 	_, _, err = dockerCmdWithError("run", "--net=mynet", "--ip6", "172.28.99.99", "busybox", "top")

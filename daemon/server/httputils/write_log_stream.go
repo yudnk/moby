@@ -9,7 +9,7 @@ import (
 	"sort"
 
 	"github.com/moby/moby/api/pkg/stdcopy"
-	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/v2/daemon/internal/stdcopymux"
 	"github.com/moby/moby/v2/daemon/server/backend"
 	"github.com/moby/moby/v2/pkg/ioutils"
 )
@@ -20,7 +20,7 @@ const rfc3339NanoFixed = "2006-01-02T15:04:05.000000000Z07:00"
 
 // WriteLogStream writes an encoded byte stream of log messages from the
 // messages channel, multiplexing them with a stdcopy.Writer if mux is true
-func WriteLogStream(_ context.Context, w http.ResponseWriter, msgs <-chan *backend.LogMessage, config *container.LogsOptions, mux bool) {
+func WriteLogStream(_ context.Context, w http.ResponseWriter, msgs <-chan *backend.LogMessage, config *backend.ContainerLogsOptions, mux bool) {
 	// See https://github.com/moby/moby/issues/47448
 	// Trigger headers to be written immediately.
 	w.WriteHeader(http.StatusOK)
@@ -34,9 +34,9 @@ func WriteLogStream(_ context.Context, w http.ResponseWriter, msgs <-chan *backe
 	errStream := outStream
 	sysErrStream := errStream
 	if mux {
-		sysErrStream = stdcopy.NewStdWriter(outStream, stdcopy.Systemerr)
-		errStream = stdcopy.NewStdWriter(outStream, stdcopy.Stderr)
-		outStream = stdcopy.NewStdWriter(outStream, stdcopy.Stdout)
+		sysErrStream = stdcopymux.NewStdWriter(outStream, stdcopy.Systemerr)
+		errStream = stdcopymux.NewStdWriter(outStream, stdcopy.Stderr)
+		outStream = stdcopymux.NewStdWriter(outStream, stdcopy.Stdout)
 	}
 
 	for {

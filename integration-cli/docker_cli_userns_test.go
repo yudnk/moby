@@ -14,7 +14,7 @@ import (
 	"testing"
 
 	"github.com/moby/moby/client/pkg/stringid"
-	"github.com/moby/moby/v2/testutil"
+	"github.com/moby/moby/v2/internal/testutil"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 )
@@ -26,7 +26,7 @@ func (s *DockerDaemonSuite) TestDaemonUserNamespaceRootSetting(c *testing.T) {
 	testRequires(c, UserNamespaceInKernel)
 
 	ctx := testutil.GetContext(c)
-	s.d.StartWithBusybox(ctx, c, "--userns-remap", "default")
+	s.d.StartWithBusybox(ctx, c, "--userns-remap", "default", "--storage-driver", "vfs")
 
 	out, err := s.d.Cmd("run", "busybox", "stat", "-c", "%u:%g", "/bin/cat")
 	assert.Check(c, err)

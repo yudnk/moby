@@ -8,8 +8,6 @@ import (
 	"io"
 	"testing"
 
-	"github.com/moby/moby/api/types/filters"
-	"github.com/moby/moby/api/types/volume"
 	"github.com/moby/moby/client"
 	"github.com/moby/moby/v2/integration/internal/container"
 	"github.com/moby/moby/v2/integration/internal/requirement"
@@ -51,7 +49,7 @@ func TestAuthZPluginV2AllowNonVolumeRequest(t *testing.T) {
 	// Ensure docker run command and accompanying docker ps are successful
 	cID := container.Run(ctx, t, c)
 
-	_, err = c.ContainerInspect(ctx, cID)
+	_, err = c.ContainerInspect(ctx, cID, client.ContainerInspectOptions{})
 	assert.NilError(t, err)
 }
 
@@ -68,16 +66,16 @@ func TestAuthZPluginV2Disable(t *testing.T) {
 	d.Restart(t, "--authorization-plugin="+authzPluginNameWithTag)
 	d.LoadBusybox(ctx, t)
 
-	_, err = c.VolumeCreate(ctx, volume.CreateOptions{Driver: "local"})
+	_, err = c.VolumeCreate(ctx, client.VolumeCreateOptions{Driver: "local"})
 	assert.Assert(t, err != nil)
 	assert.ErrorContains(t, err, fmt.Sprintf("Error response from daemon: plugin %s failed with error:", authzPluginNameWithTag))
 
 	// disable the plugin
-	err = c.PluginDisable(ctx, authzPluginNameWithTag, client.PluginDisableOptions{})
+	_, err = c.PluginDisable(ctx, authzPluginNameWithTag, client.PluginDisableOptions{})
 	assert.NilError(t, err)
 
 	// now test to see if the docker api works.
-	_, err = c.VolumeCreate(ctx, volume.CreateOptions{Driver: "local"})
+	_, err = c.VolumeCreate(ctx, client.VolumeCreateOptions{Driver: "local"})
 	assert.NilError(t, err)
 }
 
@@ -94,24 +92,24 @@ func TestAuthZPluginV2RejectVolumeRequests(t *testing.T) {
 	// restart the daemon with the plugin
 	d.Restart(t, "--authorization-plugin="+authzPluginNameWithTag)
 
-	_, err = c.VolumeCreate(ctx, volume.CreateOptions{Driver: "local"})
+	_, err = c.VolumeCreate(ctx, client.VolumeCreateOptions{Driver: "local"})
 	assert.Assert(t, err != nil)
 	assert.ErrorContains(t, err, fmt.Sprintf("Error response from daemon: plugin %s failed with error:", authzPluginNameWithTag))
 
-	_, err = c.VolumeList(ctx, volume.ListOptions{})
+	_, err = c.VolumeList(ctx, client.VolumeListOptions{})
 	assert.Assert(t, err != nil)
 	assert.ErrorContains(t, err, fmt.Sprintf("Error response from daemon: plugin %s failed with error:", authzPluginNameWithTag))
 
 	// The plugin will block the command before it can determine the volume does not exist
-	err = c.VolumeRemove(ctx, "test", false)
+	_, err = c.VolumeRemove(ctx, "test", client.VolumeRemoveOptions{})
 	assert.Assert(t, err != nil)
 	assert.ErrorContains(t, err, fmt.Sprintf("Error response from daemon: plugin %s failed with error:", authzPluginNameWithTag))
 
-	_, err = c.VolumeInspect(ctx, "test")
+	_, err = c.VolumeInspect(ctx, "test", client.VolumeInspectOptions{})
 	assert.Assert(t, err != nil)
 	assert.ErrorContains(t, err, fmt.Sprintf("Error response from daemon: plugin %s failed with error:", authzPluginNameWithTag))
 
-	_, err = c.VolumesPrune(ctx, filters.Args{})
+	_, err = c.VolumesPrune(ctx, client.VolumePruneOptions{})
 	assert.Assert(t, err != nil)
 	assert.ErrorContains(t, err, fmt.Sprintf("Error response from daemon: plugin %s failed with error:", authzPluginNameWithTag))
 }

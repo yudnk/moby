@@ -12,10 +12,10 @@ import (
 	"github.com/containerd/log"
 	"github.com/containerd/platforms"
 	"github.com/distribution/reference"
-	imagespec "github.com/moby/docker-image-spec/specs-go/v1"
+	dockerspec "github.com/moby/docker-image-spec/specs-go/v1"
 	"github.com/moby/moby/v2/daemon/images"
 	"github.com/moby/moby/v2/daemon/internal/image"
-	"github.com/moby/moby/v2/daemon/server/backend"
+	"github.com/moby/moby/v2/daemon/server/imagebackend"
 	"github.com/moby/moby/v2/errdefs"
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
@@ -41,7 +41,7 @@ func (e *errPlatformNotFound) Error() string {
 }
 
 // GetImage returns an image corresponding to the image referred to by refOrID.
-func (i *ImageService) GetImage(ctx context.Context, refOrID string, options backend.GetImageOpts) (*image.Image, error) {
+func (i *ImageService) GetImage(ctx context.Context, refOrID string, options imagebackend.GetImageOpts) (*image.Image, error) {
 	img, err := i.resolveImage(ctx, refOrID)
 	if err != nil {
 		return nil, err
@@ -54,7 +54,7 @@ func (i *ImageService) GetImage(ctx context.Context, refOrID string, options bac
 		return nil, err
 	}
 
-	var ociImage imagespec.DockerOCIImage
+	var ociImage dockerspec.DockerOCIImage
 	err = im.ReadConfig(ctx, &ociImage)
 	if err != nil {
 		return nil, err
@@ -248,11 +248,6 @@ func (i *ImageService) getImageLabelByDigest(ctx context.Context, target digest.
 	return value, nil
 }
 
-func convertError(err error) error {
-	// TODO: Convert containerd error to Docker error
-	return err
-}
-
 // resolveAllReferences resolves the reference name or ID to an image and returns all the images with
 // the same target.
 //
@@ -293,7 +288,7 @@ func (i *ImageService) resolveAllReferences(ctx context.Context, refOrID string)
 					dgst = cimg.Target.Digest
 				}
 			} else if !cerrdefs.IsNotFound(err) {
-				return nil, nil, convertError(err)
+				return nil, nil, err
 			} else {
 				dgst = d.Digest()
 			}
@@ -305,7 +300,7 @@ func (i *ImageService) resolveAllReferences(ctx context.Context, refOrID string)
 			}
 			imgs, err := i.images.List(ctx, filters...)
 			if err != nil {
-				return nil, nil, convertError(err)
+				return nil, nil, err
 			}
 
 			if len(imgs) == 0 {
@@ -347,7 +342,7 @@ func (i *ImageService) resolveAllReferences(ctx context.Context, refOrID string)
 		cimg, err := i.images.Get(ctx, name)
 		if err != nil {
 			if !cerrdefs.IsNotFound(err) {
-				return nil, nil, convertError(err)
+				return nil, nil, err
 			}
 			// If digest is given, continue looking up for matching targets.
 			// There will be no exact match found but the caller may attempt

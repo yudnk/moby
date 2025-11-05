@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/moby/moby/v2/daemon/libnetwork/driverapi"
-	"github.com/moby/moby/v2/internal/testutils/storeutils"
+	"github.com/moby/moby/v2/internal/testutil/storeutils"
 )
 
 const testNetworkType = "macvlan"
@@ -31,15 +31,20 @@ func (dt *driverTester) RegisterDriver(name string, drv driverapi.Driver, capabi
 	return nil
 }
 
+func (dt *driverTester) RegisterNetworkAllocator(name string, _ driverapi.NetworkAllocator) error {
+	dt.t.Fatalf("Unexpected call to RegisterNetworkAllocator for %q", name)
+	return nil
+}
+
 func TestMacvlanRegister(t *testing.T) {
-	if err := Register(&driverTester{t: t}, storeutils.NewTempStore(t), nil); err != nil {
+	if err := Register(&driverTester{t: t}, storeutils.NewTempStore(t)); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func TestMacvlanNilConfig(t *testing.T) {
 	dt := &driverTester{t: t}
-	if err := Register(dt, storeutils.NewTempStore(t), nil); err != nil {
+	if err := Register(dt, storeutils.NewTempStore(t)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -50,7 +55,7 @@ func TestMacvlanNilConfig(t *testing.T) {
 
 func TestMacvlanType(t *testing.T) {
 	dt := &driverTester{t: t}
-	if err := Register(dt, storeutils.NewTempStore(t), nil); err != nil {
+	if err := Register(dt, storeutils.NewTempStore(t)); err != nil {
 		t.Fatal(err)
 	}
 

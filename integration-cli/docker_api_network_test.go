@@ -3,34 +3,18 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"net"
 	"net/http"
-	"net/url"
+	"net/netip"
 	"strings"
 	"testing"
 
-	"github.com/moby/moby/api/types/filters"
 	"github.com/moby/moby/api/types/network"
+	"github.com/moby/moby/client"
 	"github.com/moby/moby/v2/integration-cli/cli"
-	"github.com/moby/moby/v2/testutil"
-	"github.com/moby/moby/v2/testutil/request"
+	"github.com/moby/moby/v2/internal/testutil"
+	"github.com/moby/moby/v2/internal/testutil/request"
 	"gotest.tools/v3/assert"
 )
-
-func (s *DockerAPISuite) TestAPINetworkGetDefaults(c *testing.T) {
-	testRequires(c, DaemonIsLinux)
-	// By default docker daemon creates 3 networks. check if they are present
-	defaults := []string{"bridge", "host", "none"}
-	for _, nn := range defaults {
-		assert.Assert(c, isNetworkAvailable(c, nn))
-	}
-}
-
-func (s *DockerAPISuite) TestAPINetworkFilter(c *testing.T) {
-	testRequires(c, DaemonIsLinux)
-	nr := getNetworkResource(c, getNetworkIDByName(c, "bridge"))
-	assert.Equal(c, nr.Name, "bridge")
-}
 
 func (s *DockerAPISuite) TestAPINetworkInspectBridge(c *testing.T) {
 	testRequires(c, DaemonIsLinux)
@@ -53,9 +37,7 @@ func (s *DockerAPISuite) TestAPINetworkInspectBridge(c *testing.T) {
 	_, ok := nr.Containers[containerID]
 	assert.Assert(c, ok)
 
-	ip, _, err := net.ParseCIDR(nr.Containers[containerID].IPv4Address)
-	assert.NilError(c, err)
-	assert.Equal(c, ip.String(), containerIP)
+	assert.Equal(c, nr.Containers[containerID].IPv4Address.Addr().String(), containerIP)
 }
 
 func (s *DockerAPISuite) TestAPINetworkInspectUserDefinedNetwork(c *testing.T) {
@@ -63,24 +45,22 @@ func (s *DockerAPISuite) TestAPINetworkInspectUserDefinedNetwork(c *testing.T) {
 	// IPAM configuration inspect
 	ipam := &network.IPAM{
 		Driver: "default",
-		Config: []network.IPAMConfig{{Subnet: "172.28.0.0/16", IPRange: "172.28.5.0/24", Gateway: "172.28.5.254"}},
+		Config: []network.IPAMConfig{{Subnet: netip.MustParsePrefix("172.28.0.0/16"), IPRange: netip.MustParsePrefix("172.28.5.0/24"), Gateway: netip.MustParseAddr("172.28.5.254")}},
 	}
 	config := network.CreateRequest{
-		Name: "br0",
-		CreateOptions: network.CreateOptions{
-			Driver:  "bridge",
-			IPAM:    ipam,
-			Options: map[string]string{"foo": "bar", "opts": "dopts"},
-		},
+		Name:    "br0",
+		Driver:  "bridge",
+		IPAM:    ipam,
+		Options: map[string]string{"foo": "bar", "opts": "dopts"},
 	}
 	id0 := createNetwork(c, config, http.StatusCreated)
 	assert.Assert(c, isNetworkAvailable(c, "br0"))
 
 	nr := getNetworkResource(c, id0)
 	assert.Equal(c, len(nr.IPAM.Config), 1)
-	assert.Equal(c, nr.IPAM.Config[0].Subnet, "172.28.0.0/16")
-	assert.Equal(c, nr.IPAM.Config[0].IPRange, "172.28.5.0/24")
-	assert.Equal(c, nr.IPAM.Config[0].Gateway, "172.28.5.254")
+	assert.Equal(c, nr.IPAM.Config[0].Subnet, netip.MustParsePrefix("172.28.0.0/16"))
+	assert.Equal(c, nr.IPAM.Config[0].IPRange, netip.MustParsePrefix("172.28.5.0/24"))
+	assert.Equal(c, nr.IPAM.Config[0].Gateway, netip.MustParseAddr("172.28.5.254"))
 	assert.Equal(c, nr.Options["foo"], "bar")
 	assert.Equal(c, nr.Options["opts"], "dopts")
 
@@ -116,10 +96,8 @@ func (s *DockerAPISuite) TestAPINetworkConnectDisconnect(c *testing.T) {
 	assert.Assert(c, ok)
 
 	// check if container IP matches network inspect
-	ip, _, err := net.ParseCIDR(nr.Containers[containerID].IPv4Address)
-	assert.NilError(c, err)
 	containerIP := findContainerIP(c, "test", "testnetwork")
-	assert.Equal(c, ip.String(), containerIP)
+	assert.Equal(c, nr.Containers[containerID].IPv4Address.Addr().String(), containerIP)
 
 	// disconnect container from the network
 	disconnectNetwork(c, nr.ID, containerID)
@@ -136,44 +114,38 @@ func (s *DockerAPISuite) TestAPINetworkIPAMMultipleBridgeNetworks(c *testing.T) 
 	// test0 bridge network
 	ipam0 := &network.IPAM{
 		Driver: "default",
-		Config: []network.IPAMConfig{{Subnet: "192.178.0.0/16", IPRange: "192.178.128.0/17", Gateway: "192.178.138.100"}},
+		Config: []network.IPAMConfig{{Subnet: netip.MustParsePrefix("192.178.0.0/16"), IPRange: netip.MustParsePrefix("192.178.128.0/17"), Gateway: netip.MustParseAddr("192.178.138.100")}},
 	}
 	config0 := network.CreateRequest{
-		Name: "test0",
-		CreateOptions: network.CreateOptions{
-			Driver: "bridge",
-			IPAM:   ipam0,
-		},
+		Name:   "test0",
+		Driver: "bridge",
+		IPAM:   ipam0,
 	}
 	id0 := createNetwork(c, config0, http.StatusCreated)
 	assert.Assert(c, isNetworkAvailable(c, "test0"))
 
 	ipam1 := &network.IPAM{
 		Driver: "default",
-		Config: []network.IPAMConfig{{Subnet: "192.178.128.0/17", Gateway: "192.178.128.1"}},
+		Config: []network.IPAMConfig{{Subnet: netip.MustParsePrefix("192.178.128.0/17"), Gateway: netip.MustParseAddr("192.178.128.1")}},
 	}
 	// test1 bridge network overlaps with test0
 	config1 := network.CreateRequest{
-		Name: "test1",
-		CreateOptions: network.CreateOptions{
-			Driver: "bridge",
-			IPAM:   ipam1,
-		},
+		Name:   "test1",
+		Driver: "bridge",
+		IPAM:   ipam1,
 	}
 	createNetwork(c, config1, http.StatusForbidden)
 	assert.Assert(c, !isNetworkAvailable(c, "test1"))
 
 	ipam2 := &network.IPAM{
 		Driver: "default",
-		Config: []network.IPAMConfig{{Subnet: "192.169.0.0/16", Gateway: "192.169.100.100"}},
+		Config: []network.IPAMConfig{{Subnet: netip.MustParsePrefix("192.169.0.0/16"), Gateway: netip.MustParseAddr("192.169.100.100")}},
 	}
 	// test2 bridge network does not overlap
 	config2 := network.CreateRequest{
-		Name: "test2",
-		CreateOptions: network.CreateOptions{
-			Driver: "bridge",
-			IPAM:   ipam2,
-		},
+		Name:   "test2",
+		Driver: "bridge",
+		IPAM:   ipam2,
 	}
 	createNetwork(c, config2, http.StatusCreated)
 	assert.Assert(c, isNetworkAvailable(c, "test2"))
@@ -229,31 +201,6 @@ func isNetworkAvailable(t *testing.T, name string) bool {
 	return false
 }
 
-func getNetworkIDByName(t *testing.T, name string) string {
-	filterJSON, err := filters.ToJSON(filters.NewArgs(filters.Arg("name", name)))
-	assert.NilError(t, err)
-	v := url.Values{}
-	v.Set("filters", filterJSON)
-
-	resp, body, err := request.Get(testutil.GetContext(t), "/networks?"+v.Encode())
-	assert.Equal(t, resp.StatusCode, http.StatusOK)
-	assert.NilError(t, err)
-
-	var nJSON []network.Inspect
-	err = json.NewDecoder(body).Decode(&nJSON)
-	assert.NilError(t, err)
-	var res string
-	for _, n := range nJSON {
-		// Find exact match
-		if n.Name == name {
-			res = n.ID
-		}
-	}
-	assert.Assert(t, res != "")
-
-	return res
-}
-
 func getNetworkResource(t *testing.T, id string) *network.Inspect {
 	_, obj, err := request.Get(testutil.GetContext(t), "/networks/"+id)
 	assert.NilError(t, err)
@@ -289,7 +236,7 @@ func createNetwork(t *testing.T, config network.CreateRequest, expectedStatusCod
 }
 
 func connectNetwork(t *testing.T, nid, cid string) {
-	resp, _, err := request.Post(testutil.GetContext(t), "/networks/"+nid+"/connect", request.JSONBody(network.ConnectOptions{
+	resp, _, err := request.Post(testutil.GetContext(t), "/networks/"+nid+"/connect", request.JSONBody(network.ConnectRequest{
 		Container: cid,
 	}))
 	assert.NilError(t, err)
@@ -297,7 +244,7 @@ func connectNetwork(t *testing.T, nid, cid string) {
 }
 
 func disconnectNetwork(t *testing.T, nid, cid string) {
-	config := network.ConnectOptions{
+	config := client.NetworkDisconnectOptions{
 		Container: cid,
 	}
 

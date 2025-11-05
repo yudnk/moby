@@ -81,7 +81,6 @@ info:
     {
       "username": "string",
       "password": "string",
-      "email": "string",
       "serveraddress": "string"
     }
     ```
@@ -183,6 +182,10 @@ definitions:
         type: "string"
         format: "ip-address"
         description: "Host IP address that the container's port is mapped to"
+        x-go-type:
+          type: Addr
+          import:
+            package: net/netip
       PrivatePort:
         type: "integer"
         format: "uint16"
@@ -642,15 +645,6 @@ definitions:
         type: "array"
         items:
           $ref: "#/definitions/DeviceRequest"
-      KernelMemoryTCP:
-        description: |
-          Hard limit for kernel TCP buffer memory (in bytes). Depending on the
-          OCI runtime in use, this option may be ignored. It is no longer supported
-          by the default (runc) runtime.
-
-          This field is omitted when empty.
-        type: "integer"
-        format: "int64"
       MemoryReservation:
         description: "Memory soft limit in bytes."
         type: "integer"
@@ -1091,6 +1085,11 @@ definitions:
             description: "A list of DNS servers for the container to use."
             items:
               type: "string"
+              format: "ip-address"
+              x-go-type:
+                type: Addr
+                import:
+                  package: net/netip
           DnsOptions:
             type: "array"
             description: "A list of DNS options."
@@ -1391,13 +1390,6 @@ definitions:
         description: "Disable networking for the container."
         type: "boolean"
         x-nullable: true
-      MacAddress:
-        description: |
-          MAC address of the container.
-
-          Deprecated: this field is deprecated in API v1.44 and up. Use EndpointSettings.MacAddress instead.
-        type: "string"
-        x-nullable: true
       OnBuild:
         description: |
           `ONBUILD` metadata that were defined in the image's `Dockerfile`.
@@ -1543,37 +1535,6 @@ definitions:
         items:
           type: "string"
         example: ["/bin/sh", "-c"]
-    # FIXME(thaJeztah): temporarily using a full example to remove some "omitempty" fields. Remove once the fields are removed.
-    example:
-      "User": "web:web"
-      "ExposedPorts": {
-        "80/tcp": {},
-        "443/tcp": {}
-      }
-      "Env": ["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"]
-      "Cmd": ["/bin/sh"]
-      "Healthcheck": {
-        "Test": ["string"],
-        "Interval": 0,
-        "Timeout": 0,
-        "Retries": 0,
-        "StartPeriod": 0,
-        "StartInterval": 0
-      }
-      "ArgsEscaped": true
-      "Volumes": {
-        "/app/data": {},
-        "/app/config": {}
-      }
-      "WorkingDir": "/public/"
-      "Entrypoint": []
-      "OnBuild": []
-      "Labels": {
-        "com.example.some-label": "some-value",
-        "com.example.some-other-label": "some-other-value"
-      }
-      "StopSignal": "SIGTERM"
-      "Shell": ["/bin/sh", "-c"]
 
   NetworkingConfig:
     description: |
@@ -1617,163 +1578,16 @@ definitions:
     description: "NetworkSettings exposes the network settings in the API"
     type: "object"
     properties:
-      Bridge:
-        description: |
-          Name of the default bridge interface when dockerd's --bridge flag is set.
-        type: "string"
-        example: "docker0"
       SandboxID:
         description: SandboxID uniquely represents a container's network stack.
         type: "string"
         example: "9d12daf2c33f5959c8bf90aa513e4f65b561738661003029ec84830cd503a0c3"
-      HairpinMode:
-        description: |
-          Indicates if hairpin NAT should be enabled on the virtual interface.
-
-          Deprecated: This field is never set and will be removed in a future release.
-        type: "boolean"
-        example: false
-      LinkLocalIPv6Address:
-        description: |
-          IPv6 unicast address using the link-local prefix.
-
-          Deprecated: This field is never set and will be removed in a future release.
-        type: "string"
-        example: ""
-      LinkLocalIPv6PrefixLen:
-        description: |
-          Prefix length of the IPv6 unicast address.
-
-          Deprecated: This field is never set and will be removed in a future release.
-        type: "integer"
-        example: ""
-      Ports:
-        $ref: "#/definitions/PortMap"
       SandboxKey:
         description: SandboxKey is the full path of the netns handle
         type: "string"
         example: "/var/run/docker/netns/8ab54b426c38"
-
-      SecondaryIPAddresses:
-        description: "Deprecated: This field is never set and will be removed in a future release."
-        type: "array"
-        items:
-          $ref: "#/definitions/Address"
-        x-nullable: true
-
-      SecondaryIPv6Addresses:
-        description: "Deprecated: This field is never set and will be removed in a future release."
-        type: "array"
-        items:
-          $ref: "#/definitions/Address"
-        x-nullable: true
-
-      # TODO properties below are part of DefaultNetworkSettings, which is
-      # marked as deprecated since Docker 1.9 and to be removed in Docker v17.12
-      EndpointID:
-        description: |
-          EndpointID uniquely represents a service endpoint in a Sandbox.
-
-          <p><br /></p>
-
-          > **Deprecated**: This field is only propagated when attached to the
-          > default "bridge" network. Use the information from the "bridge"
-          > network inside the `Networks` map instead, which contains the same
-          > information. This field was deprecated in Docker 1.9 and is scheduled
-          > to be removed in Docker 17.12.0
-        type: "string"
-        example: "b88f5b905aabf2893f3cbc4ee42d1ea7980bbc0a92e2c8922b1e1795298afb0b"
-      Gateway:
-        description: |
-          Gateway address for the default "bridge" network.
-
-          <p><br /></p>
-
-          > **Deprecated**: This field is only propagated when attached to the
-          > default "bridge" network. Use the information from the "bridge"
-          > network inside the `Networks` map instead, which contains the same
-          > information. This field was deprecated in Docker 1.9 and is scheduled
-          > to be removed in Docker 17.12.0
-        type: "string"
-        example: "172.17.0.1"
-      GlobalIPv6Address:
-        description: |
-          Global IPv6 address for the default "bridge" network.
-
-          <p><br /></p>
-
-          > **Deprecated**: This field is only propagated when attached to the
-          > default "bridge" network. Use the information from the "bridge"
-          > network inside the `Networks` map instead, which contains the same
-          > information. This field was deprecated in Docker 1.9 and is scheduled
-          > to be removed in Docker 17.12.0
-        type: "string"
-        example: "2001:db8::5689"
-      GlobalIPv6PrefixLen:
-        description: |
-          Mask length of the global IPv6 address.
-
-          <p><br /></p>
-
-          > **Deprecated**: This field is only propagated when attached to the
-          > default "bridge" network. Use the information from the "bridge"
-          > network inside the `Networks` map instead, which contains the same
-          > information. This field was deprecated in Docker 1.9 and is scheduled
-          > to be removed in Docker 17.12.0
-        type: "integer"
-        example: 64
-      IPAddress:
-        description: |
-          IPv4 address for the default "bridge" network.
-
-          <p><br /></p>
-
-          > **Deprecated**: This field is only propagated when attached to the
-          > default "bridge" network. Use the information from the "bridge"
-          > network inside the `Networks` map instead, which contains the same
-          > information. This field was deprecated in Docker 1.9 and is scheduled
-          > to be removed in Docker 17.12.0
-        type: "string"
-        example: "172.17.0.4"
-      IPPrefixLen:
-        description: |
-          Mask length of the IPv4 address.
-
-          <p><br /></p>
-
-          > **Deprecated**: This field is only propagated when attached to the
-          > default "bridge" network. Use the information from the "bridge"
-          > network inside the `Networks` map instead, which contains the same
-          > information. This field was deprecated in Docker 1.9 and is scheduled
-          > to be removed in Docker 17.12.0
-        type: "integer"
-        example: 16
-      IPv6Gateway:
-        description: |
-          IPv6 gateway address for this network.
-
-          <p><br /></p>
-
-          > **Deprecated**: This field is only propagated when attached to the
-          > default "bridge" network. Use the information from the "bridge"
-          > network inside the `Networks` map instead, which contains the same
-          > information. This field was deprecated in Docker 1.9 and is scheduled
-          > to be removed in Docker 17.12.0
-        type: "string"
-        example: "2001:db8:2::100"
-      MacAddress:
-        description: |
-          MAC address for the container on the default "bridge" network.
-
-          <p><br /></p>
-
-          > **Deprecated**: This field is only propagated when attached to the
-          > default "bridge" network. Use the information from the "bridge"
-          > network inside the `Networks` map instead, which contains the same
-          > information. This field was deprecated in Docker 1.9 and is scheduled
-          > to be removed in Docker 17.12.0
-        type: "string"
-        example: "02:42:ac:11:00:04"
+      Ports:
+        $ref: "#/definitions/PortMap"
       Networks:
         description: |
           Information about all networks that the container is connected to.
@@ -1833,6 +1647,10 @@ definitions:
         description: "Host IP address that the container's port is mapped to."
         type: "string"
         example: "127.0.0.1"
+        x-go-type:
+          type: Addr
+          import:
+            package: net/netip
       HostPort:
         description: "Host port number that the container's port is mapped to."
         type: "string"
@@ -1865,6 +1683,42 @@ definitions:
           "UpperDir": "/var/lib/docker/overlay2/ef749362d13333e65fc95c572eb525abbe0052e16e086cb64bc3b98ae9aa6d74/diff",
           "WorkDir": "/var/lib/docker/overlay2/ef749362d13333e65fc95c572eb525abbe0052e16e086cb64bc3b98ae9aa6d74/work"
         }
+
+  Storage:
+    description: |
+      Information about the storage used by the container.
+    type: "object"
+    properties:
+      RootFS:
+        description: |
+          Information about the storage used for the container's root filesystem.
+        type: "object"
+        x-nullable: true
+        $ref: "#/definitions/RootFSStorage"
+
+  RootFSStorage:
+    description: |
+      Information about the storage used for the container's root filesystem.
+    type: "object"
+    x-go-name: RootFSStorage
+    properties:
+      Snapshot:
+        description: |
+          Information about the snapshot used for the container's root filesystem.
+        type: "object"
+        x-nullable: true
+        $ref: "#/definitions/RootFSStorageSnapshot"
+
+  RootFSStorageSnapshot:
+    description: |
+      Information about a snapshot backend of the container's root filesystem.
+    type: "object"
+    x-go-name: RootFSStorageSnapshot
+    properties:
+      Name:
+        description: "Name of the snapshotter."
+        type: "string"
+        x-nullable: false
 
   FilesystemChange:
     description: |
@@ -1970,21 +1824,11 @@ definitions:
         example:
           - "example@sha256:afcc7f1ac1b49db317a7196c902e61c6c3c4607d63599ee1a82d702d249a0ccb"
           - "internal.registry.example.com:5000/example@sha256:b69959407d21e8a062e0416bf13405bb2b71ed7a84dde4158ebafacfa06f5578"
-      Parent:
-        description: |
-          ID of the parent image.
-
-          Depending on how the image was created, this field may be empty and
-          is only set for images that were built/created locally. This field
-          is empty if the image was pulled from an image registry.
-        type: "string"
-        x-nullable: false
-        example: ""
       Comment:
         description: |
           Optional message that was set when committing or importing the image.
         type: "string"
-        x-nullable: false
+        x-nullable: true
         example: ""
       Created:
         description: |
@@ -1997,20 +1841,12 @@ definitions:
         format: "dateTime"
         x-nullable: true
         example: "2022-02-04T21:20:12.497794809Z"
-      DockerVersion:
-        description: |
-          The version of Docker that was used to build the image.
-
-          Depending on how the image was created, this field may be empty.
-        type: "string"
-        x-nullable: false
-        example: "27.0.1"
       Author:
         description: |
           Name of the author that was specified when committing the image, or as
           specified through MAINTAINER (deprecated) in the Dockerfile.
         type: "string"
-        x-nullable: false
+        x-nullable: true
         example: ""
       Config:
         $ref: "#/definitions/ImageConfig"
@@ -2046,15 +1882,8 @@ definitions:
         format: "int64"
         x-nullable: false
         example: 1239828
-      VirtualSize:
-        description: |
-          Total size of the image including all layers it is composed of.
-
-          Deprecated: this field is omitted in API v1.44, but kept for backward compatibility. Use Size instead.
-        type: "integer"
-        format: "int64"
-        example: 1239828
       GraphDriver:
+        x-nullable: true
         $ref: "#/definitions/DriverData"
       RootFS:
         description: |
@@ -2186,14 +2015,6 @@ definitions:
         format: "int64"
         x-nullable: false
         example: 1239828
-      VirtualSize:
-        description: |-
-          Total size of the image including all layers it is composed of.
-
-          Deprecated: this field is omitted in API v1.44, but kept for backward compatibility. Use Size instead.
-        type: "integer"
-        format: "int64"
-        example: 172064416
       Labels:
         description: "User-defined key/value metadata."
         type: "object"
@@ -2238,6 +2059,47 @@ definitions:
         x-nullable: true
         $ref: "#/definitions/OCIDescriptor"
 
+  ImagesDiskUsage:
+    type: "object"
+    description: |
+      ImagesDiskUsage represents system data usage for image resources.
+    properties:
+      ActiveImages:
+        description: |
+          Count of active images.
+        type: "integer"
+        format: "int64"
+        example: 1
+      TotalImages:
+        description: |
+          Count of all images.
+        type: "integer"
+        format: "int64"
+        example: 4
+      Reclaimable:
+        description: |
+          Disk space that can be reclaimed by removing unused images.
+        type: "integer"
+        format: "int64"
+        example: 12345678
+      TotalSize:
+        description: |
+          Disk space in use by images.
+        type: "integer"
+        format: "int64"
+        example: 98765432
+      Items:
+        description: |
+          List of image summaries.
+        type: "array"
+        x-omitempty: true
+        items:
+          x-nullable: true
+          x-go-type:
+            type: Summary
+            import:
+              package: github.com/moby/moby/api/types/image
+
   AuthConfig:
     type: "object"
     properties:
@@ -2245,14 +2107,29 @@ definitions:
         type: "string"
       password:
         type: "string"
-      email:
-        type: "string"
       serveraddress:
         type: "string"
     example:
       username: "hannibal"
       password: "xxxx"
       serveraddress: "https://index.docker.io/v1/"
+
+  AuthResponse:
+    description: |
+      An identity token was generated successfully.
+    type: "object"
+    required: [Status]
+    properties:
+      Status:
+        description: "The status of the authentication"
+        type: "string"
+        example: "Login Succeeded"
+        x-nullable: false
+      IdentityToken:
+        description: "An opaque token used to authenticate a user after a successful login"
+        type: "string"
+        example: "9cbaf023786cd7..."
+        x-nullable: false
 
   ProcessConfig:
     type: "object"
@@ -2365,11 +2242,52 @@ definitions:
               is set to `-1` if the reference-count is not available.
             x-nullable: false
 
-  VolumeCreateOptions:
+  VolumesDiskUsage:
+    type: "object"
+    description: |
+      VolumesDiskUsage represents system data usage for volume resources.
+    properties:
+      ActiveVolumes:
+        description: |
+          Count of active volumes.
+        type: "integer"
+        format: "int64"
+        example: 1
+      TotalVolumes:
+        description: |
+          Count of all volumes.
+        type: "integer"
+        format: "int64"
+        example: 4
+      Reclaimable:
+        description: |
+          Disk space that can be reclaimed by removing inactive volumes.
+        type: "integer"
+        format: "int64"
+        example: 12345678
+      TotalSize:
+        description: |
+          Disk space in use by volumes.
+        type: "integer"
+        format: "int64"
+        example: 98765432
+      Items:
+        description: |
+          List of volumes.
+        type: "array"
+        x-omitempty: true
+        items:
+          x-nullable: true
+          x-go-type:
+            type: Volume
+            import:
+              package: github.com/moby/moby/api/types/volume
+
+  VolumeCreateRequest:
     description: "Volume configuration"
     type: "object"
     title: "VolumeConfig"
-    x-go-name: "CreateOptions"
+    x-go-name: "CreateRequest"
     properties:
       Name:
         description: |
@@ -2432,10 +2350,13 @@ definitions:
           Name of the network.
         type: "string"
         example: "my_network"
+        x-omitempty: false
       Id:
         description: |
           ID that uniquely identifies a network on a single machine.
         type: "string"
+        x-go-name: "ID"
+        x-omitempty: false
         example: "7d86d31b1478e7cca9ebed7e73aa0fdeec46c5ca29497431d3007d2d9e15ed99"
       Created:
         description: |
@@ -2443,36 +2364,53 @@ definitions:
           [RFC 3339](https://www.ietf.org/rfc/rfc3339.txt) format with nano-seconds.
         type: "string"
         format: "dateTime"
+        x-omitempty: false
+        x-go-type:
+          type: Time
+          import:
+            package: time
+          hints:
+            nullable: false
         example: "2016-10-19T04:33:30.360899459Z"
       Scope:
         description: |
           The level at which the network exists (e.g. `swarm` for cluster-wide
           or `local` for machine level)
         type: "string"
+        x-omitempty: false
         example: "local"
       Driver:
         description: |
           The name of the driver used to create the network (e.g. `bridge`,
           `overlay`).
         type: "string"
+        x-omitempty: false
         example: "overlay"
       EnableIPv4:
         description: |
           Whether the network was created with IPv4 enabled.
         type: "boolean"
+        x-omitempty: false
         example: true
       EnableIPv6:
         description: |
           Whether the network was created with IPv6 enabled.
         type: "boolean"
+        x-omitempty: false
         example: false
       IPAM:
+        description: |
+          The network's IP Address Management.
         $ref: "#/definitions/IPAM"
+        x-nullable: false
+        x-omitempty: false
       Internal:
         description: |
           Whether the network is created to only allow internal networking
           connectivity.
         type: "boolean"
+        x-nullable: false
+        x-omitempty: false
         default: false
         example: false
       Attachable:
@@ -2480,16 +2418,22 @@ definitions:
           Whether a global / swarm scope network is manually attachable by regular
           containers from workers in swarm mode.
         type: "boolean"
+        x-nullable: false
+        x-omitempty: false
         default: false
         example: false
       Ingress:
         description: |
           Whether the network is providing the routing-mesh for the swarm cluster.
         type: "boolean"
+        x-nullable: false
+        x-omitempty: false
         default: false
         example: false
       ConfigFrom:
         $ref: "#/definitions/ConfigReference"
+        x-nullable: false
+        x-omitempty: false
       ConfigOnly:
         description: |
           Whether the network is a config-only network. Config-only networks are
@@ -2497,24 +2441,14 @@ definitions:
           networks. Config-only networks cannot be used directly to run containers
           or services.
         type: "boolean"
+        x-omitempty: false
+        x-nullable: false
         default: false
-      Containers:
-        description: |
-          Contains endpoints attached to the network.
-        type: "object"
-        additionalProperties:
-          $ref: "#/definitions/NetworkContainer"
-        example:
-          19a4d5d687db25203351ed79d478946f861258f018fe384f229f2efa4b23513c:
-            Name: "test"
-            EndpointID: "628cadb8bcb92de107b2a1e516cbffe463e321f548feb37697cce00ad694f21a"
-            MacAddress: "02:42:ac:13:00:02"
-            IPv4Address: "172.19.0.2/16"
-            IPv6Address: ""
       Options:
         description: |
           Network-specific options uses when creating the network.
         type: "object"
+        x-omitempty: false
         additionalProperties:
           type: "string"
         example:
@@ -2525,8 +2459,10 @@ definitions:
           com.docker.network.bridge.name: "docker0"
           com.docker.network.driver.mtu: "1500"
       Labels:
-        description: "User-defined key/value metadata."
+        description: |
+          Metadata specific to the network being created.
         type: "object"
+        x-omitempty: false
         additionalProperties:
           type: "string"
         example:
@@ -2537,12 +2473,126 @@ definitions:
           List of peer nodes for an overlay network. This field is only present
           for overlay networks, and omitted for other network types.
         type: "array"
+        x-omitempty: true
         items:
           $ref: "#/definitions/PeerInfo"
-        x-nullable: true
-      # TODO: Add Services (only present when "verbose" is set).
+
+  NetworkSummary:
+    description: "Network list response item"
+    x-go-name: Summary
+    type: "object"
+    allOf:
+      - $ref: "#/definitions/Network"
+
+  NetworkInspect:
+    description: 'The body of the "get network" http response message.'
+    x-go-name: Inspect
+    type: "object"
+    allOf:
+      - $ref: "#/definitions/Network"
+    properties:
+      Containers:
+        description: |
+          Contains endpoints attached to the network.
+        type: "object"
+        x-omitempty: false
+        additionalProperties:
+          $ref: "#/definitions/EndpointResource"
+        example:
+          19a4d5d687db25203351ed79d478946f861258f018fe384f229f2efa4b23513c:
+            Name: "test"
+            EndpointID: "628cadb8bcb92de107b2a1e516cbffe463e321f548feb37697cce00ad694f21a"
+            MacAddress: "02:42:ac:13:00:02"
+            IPv4Address: "172.19.0.2/16"
+            IPv6Address: ""
+      Services:
+        description: |
+          List of services using the network. This field is only present for
+          swarm scope networks, and omitted for local scope networks.
+        type: "object"
+        x-omitempty: true
+        additionalProperties:
+          x-go-type:
+            type: ServiceInfo
+            hints:
+              nullable: false
+      Status:
+        description: >
+          provides runtime information about the network
+          such as the number of allocated IPs.
+        $ref: "#/definitions/NetworkStatus"
+
+  NetworkStatus:
+    description: >
+      provides runtime information about the network
+      such as the number of allocated IPs.
+    type: "object"
+    x-go-name: Status
+    properties:
+      IPAM:
+        $ref: "#/definitions/IPAMStatus"
+
+  ServiceInfo:
+    x-nullable: false
+    x-omitempty: false
+    description: >
+      represents service parameters with the list of service's tasks
+    type: "object"
+    properties:
+      VIP:
+        type: "string"
+        x-omitempty: false
+        x-go-type:
+          type: Addr
+          import:
+            package: net/netip
+      Ports:
+        type: "array"
+        x-omitempty: false
+        items:
+          type: "string"
+      LocalLBIndex:
+        type: "integer"
+        format: "int"
+        x-omitempty: false
+        x-go-type:
+          type: int
+      Tasks:
+        type: "array"
+        x-omitempty: false
+        items:
+          $ref: "#/definitions/NetworkTaskInfo"
+
+  NetworkTaskInfo:
+    x-nullable: false
+    x-omitempty: false
+    x-go-name: Task
+    description: >
+      carries the information about one backend task
+    type: "object"
+    properties:
+      Name:
+        type: "string"
+        x-omitempty: false
+      EndpointID:
+        type: "string"
+        x-omitempty: false
+      EndpointIP:
+        type: "string"
+        x-omitempty: false
+        x-go-type:
+          type: Addr
+          import:
+            package: net/netip
+      Info:
+        type: "object"
+        x-omitempty: false
+        additionalProperties:
+          type: "string"
 
   ConfigReference:
+    x-nullable: false
+    x-omitempty: false
     description: |
       The config-only network source to provide the configuration for
       this network.
@@ -2554,10 +2604,13 @@ definitions:
           configuration. The specified network must be an existing config-only
           network. Only network names are allowed, not network IDs.
         type: "string"
+        x-omitempty: false
         example: "config_only_network_01"
 
   IPAM:
     type: "object"
+    x-nullable: false
+    x-omitempty: false
     properties:
       Driver:
         description: "Name of the IPAM driver to use."
@@ -2599,40 +2652,105 @@ definitions:
         additionalProperties:
           type: "string"
 
-  NetworkContainer:
+  IPAMStatus:
     type: "object"
+    x-nullable: false
+    x-omitempty: false
+    properties:
+      Subnets:
+        type: "object"
+        additionalProperties:
+          $ref: "#/definitions/SubnetStatus"
+        example:
+          "172.16.0.0/16":
+            IPsInUse: 3
+            DynamicIPsAvailable: 65533
+          "2001:db8:abcd:0012::0/96":
+            IPsInUse: 5
+            DynamicIPsAvailable: 4294967291
+        x-go-type:
+          type: SubnetStatuses
+          kind: map
+
+  SubnetStatus:
+    type: "object"
+    x-nullable: false
+    x-omitempty: false
+    properties:
+      IPsInUse:
+        description: >
+          Number of IP addresses in the subnet that are in use or reserved and
+          are therefore unavailable for allocation, saturating at 2<sup>64</sup> - 1.
+        type: integer
+        format: uint64
+        x-omitempty: false
+      DynamicIPsAvailable:
+        description: >
+          Number of IP addresses within the network's IPRange for the subnet
+          that are available for allocation, saturating at 2<sup>64</sup> - 1.
+        type: integer
+        format: uint64
+        x-omitempty: false
+
+  EndpointResource:
+    type: "object"
+    description: >
+      contains network resources allocated and used for a
+      container in a network.
     properties:
       Name:
         type: "string"
+        x-omitempty: false
         example: "container_1"
       EndpointID:
         type: "string"
+        x-omitempty: false
         example: "628cadb8bcb92de107b2a1e516cbffe463e321f548feb37697cce00ad694f21a"
       MacAddress:
         type: "string"
+        x-omitempty: false
         example: "02:42:ac:13:00:02"
+        x-go-type:
+          type: HardwareAddr
       IPv4Address:
         type: "string"
+        x-omitempty: false
         example: "172.19.0.2/16"
+        x-go-type:
+          type: Prefix
+          import:
+            package: net/netip
       IPv6Address:
         type: "string"
+        x-omitempty: false
         example: ""
+        x-go-type:
+          type: Prefix
+          import:
+            package: net/netip
 
   PeerInfo:
-    description: |
-      PeerInfo represents one peer of an overlay network.
+    description: >
+      represents one peer of an overlay network.
     type: "object"
+    x-nullable: false
     properties:
       Name:
         description:
           ID of the peer-node in the Swarm cluster.
         type: "string"
+        x-omitempty: false
         example: "6869d7c1732b"
       IP:
         description:
           IP-address of the peer-node in the Swarm cluster.
         type: "string"
+        x-omitempty: false
         example: "10.133.77.91"
+        x-go-type:
+          type: Addr
+          import:
+            package: net/netip
 
   NetworkCreateResponse:
     description: "OK response to NetworkCreate operation"
@@ -2678,14 +2796,6 @@ definitions:
         description: |
           Unique ID of the build cache record.
         example: "ndlpt0hhvkqcdfkputsk4cq9c"
-      Parent:
-        description: |
-          ID of the parent build cache record.
-
-          > **Deprecated**: This field is deprecated, and omitted if empty.
-        type: "string"
-        x-nullable: true
-        example: ""
       Parents:
         description: |
           List of parent build cache record IDs.
@@ -2745,6 +2855,47 @@ definitions:
       UsageCount:
         type: "integer"
         example: 26
+
+  BuildCacheDiskUsage:
+    type: "object"
+    description: |
+      BuildCacheDiskUsage represents system data usage for build cache resources.
+    properties:
+      ActiveBuildCacheRecords:
+        description: |
+          Count of active build cache records.
+        type: "integer"
+        format: "int64"
+        example: 1
+      TotalBuildCacheRecords:
+        description: |
+          Count of all build cache records.
+        type: "integer"
+        format: "int64"
+        example: 4
+      Reclaimable:
+        description: |
+          Disk space that can be reclaimed by removing inactive build cache records.
+        type: "integer"
+        format: "int64"
+        example: 12345678
+      TotalSize:
+        description: |
+          Disk space in use by build cache records.
+        type: "integer"
+        format: "int64"
+        example: 98765432
+      Items:
+        description: |
+          List of build cache records.
+        type: "array"
+        x-omitempty: true
+        items:
+          x-nullable: true
+          x-go-type:
+            type: CacheRecord
+            import:
+              package: github.com/moby/moby/api/types/build
 
   ImageID:
     type: "object"
@@ -2833,6 +2984,42 @@ definitions:
         type: "string"
         x-nullable: false
 
+  NetworkConnectRequest:
+    description: |
+      NetworkConnectRequest represents the data to be used to connect a container to a network.
+    type: "object"
+    x-go-name: "ConnectRequest"
+    required: ["Container"]
+    properties:
+      Container:
+        type: "string"
+        description: "The ID or name of the container to connect to the network."
+        x-nullable: false
+        example: "3613f73ba0e4"
+      EndpointConfig:
+        $ref: "#/definitions/EndpointSettings"
+        x-nullable: true
+
+  NetworkDisconnectRequest:
+    description: |
+      NetworkDisconnectRequest represents the data to be used to disconnect a container from a network.
+    type: "object"
+    x-go-name: "DisconnectRequest"
+    required: ["Container"]
+    properties:
+      Container:
+        type: "string"
+        description: "The ID or name of the container to disconnect from the network."
+        x-nullable: false
+        example: "3613f73ba0e4"
+      Force:
+        type: "boolean"
+        description: "Force the container to disconnect from the network."
+        default: false
+        x-nullable: false
+        x-omitempty: false
+        example: false
+
   EndpointSettings:
     description: "Configuration for a network endpoint."
     type: "object"
@@ -2852,6 +3039,8 @@ definitions:
           MAC address for the endpoint on this network. The network driver might ignore this parameter.
         type: "string"
         example: "02:42:ac:11:00:04"
+        x-go-type:
+          type: HardwareAddr
       Aliases:
         type: "array"
         items:
@@ -2903,6 +3092,10 @@ definitions:
           IPv4 address.
         type: "string"
         example: "172.17.0.4"
+        x-go-type:
+          type: Addr
+          import:
+            package: net/netip
       IPPrefixLen:
         description: |
           Mask length of the IPv4 address.
@@ -2913,11 +3106,19 @@ definitions:
           IPv6 gateway address.
         type: "string"
         example: "2001:db8:2::100"
+        x-go-type:
+          type: Addr
+          import:
+            package: net/netip
       GlobalIPv6Address:
         description: |
           Global IPv6 address.
         type: "string"
         example: "2001:db8::5689"
+        x-go-type:
+          type: Addr
+          import:
+            package: net/netip
       GlobalIPv6PrefixLen:
         description: |
           Mask length of the global IPv6 address.
@@ -2949,13 +3150,25 @@ definitions:
       IPv4Address:
         type: "string"
         example: "172.20.30.33"
+        x-go-type:
+          type: Addr
+          import:
+            package: net/netip
       IPv6Address:
         type: "string"
         example: "2001:db8:abcd::3033"
+        x-go-type:
+          type: Addr
+          import:
+            package: net/netip
       LinkLocalIPs:
         type: "array"
         items:
           type: "string"
+          x-go-type:
+            type: Addr
+            import:
+              package: net/netip
         example:
           - "169.254.34.68"
           - "fe80::3468"
@@ -3127,10 +3340,15 @@ definitions:
           - Args
         properties:
           DockerVersion:
-            description: "Docker Version used to create the plugin"
+            description: |-
+              Docker Version used to create the plugin.
+
+              Depending on how the plugin was created, this field may be empty or omitted.
+
+              Deprecated: this field is no longer set, and will be removed in the next API version.
             type: "string"
             x-nullable: false
-            example: "17.06.0-ce"
+            x-omitempty: true
           Description:
             type: "string"
             x-nullable: false
@@ -4249,6 +4467,29 @@ definitions:
           Reservations:
             description: "Define resources reservation."
             $ref: "#/definitions/ResourceObject"
+          SwapBytes:
+            description: |
+              Amount of swap in bytes - can only be used together with a memory limit.
+              If not specified, the default behaviour is to grant a swap space twice
+              as big as the memory limit.
+              Set to -1 to enable unlimited swap.
+            type: "integer"
+            format: "int64"
+            minimum: -1
+            x-nullable: true
+            x-omitempty: true
+          MemorySwappiness:
+            description: |
+              Tune the service's containers' memory swappiness (0 to 100).
+              If not specified, defaults to the containers' OS' default, generally 60,
+              or whatever value was predefined in the image.
+              Set to -1 to unset a previously set value.
+            type: "integer"
+            format: "int64"
+            minimum: -1
+            maximum: 100
+            x-nullable: true
+            x-omitempty: true
       RestartPolicy:
         description: |
           Specification for the restart policy which applies to containers
@@ -5113,6 +5354,10 @@ definitions:
         $ref: "#/definitions/HostConfig"
       GraphDriver:
         $ref: "#/definitions/DriverData"
+        x-nullable: true
+      Storage:
+        $ref: "#/definitions/Storage"
+        x-nullable: true
       SizeRw:
         description: |-
           The size of files that have been created or changed by this container.
@@ -5334,6 +5579,47 @@ definitions:
             description: "FailingStreak is the number of consecutive failures"
             type: "integer"
             example: 0
+
+  ContainersDiskUsage:
+    type: "object"
+    description: |
+      ContainersDiskUsage provides system data usage information for container resources.
+    properties:
+      ActiveContainers:
+        description: |
+          Count of active containers.
+        type: "integer"
+        format: "int64"
+        example: 1
+      TotalContainers:
+        description: |
+          Count of all containers.
+        type: "integer"
+        format: "int64"
+        example: 4
+      Reclaimable:
+        description: |
+          Disk space that can be reclaimed by removing inactive containers.
+        type: "integer"
+        format: "int64"
+        example: 12345678
+      TotalSize:
+        description: |
+          Disk space in use by containers.
+        type: "integer"
+        format: "int64"
+        example: 98765432
+      Items:
+        description: |
+          List of container summaries.
+        type: "array"
+        x-omitempty: true
+        items:
+          x-nullable: true
+          x-go-type:
+            type: Summary
+            import:
+              package: github.com/moby/moby/api/types/container
 
   Driver:
     description: "Driver represents a driver (network, logging, secrets)."
@@ -5562,16 +5848,25 @@ definitions:
     x-go-name: "StatsResponse"
     title: "ContainerStatsResponse"
     properties:
-      name:
-        description: "Name of the container"
-        type: "string"
-        x-nullable: true
-        example: "boring_wozniak"
       id:
-        description: "ID of the container"
+        description: |
+          ID of the container for which the stats were collected.
         type: "string"
         x-nullable: true
         example: "ede54ee1afda366ab42f824e8a5ffd195155d853ceaec74a927f249ea270c743"
+      name:
+        description: |
+          Name of the container for which the stats were collected.
+        type: "string"
+        x-nullable: true
+        example: "boring_wozniak"
+      os_type:
+        description: |
+          OSType is the OS of the container ("linux" or "windows") to allow
+          platform-specific handling of stats.
+        type: "string"
+        x-nullable: true
+        example: "linux"
       read:
         description: |
           Date and time at which this sample was collected.
@@ -5580,35 +5875,7 @@ definitions:
         type: "string"
         format: "date-time"
         example: "2025-01-16T13:55:22.165243637Z"
-      preread:
-        description: |
-          Date and time at which this first sample was collected. This field
-          is not propagated if the "one-shot" option is set. If the "one-shot"
-          option is set, this field may be omitted, empty, or set to a default
-          date (`0001-01-01T00:00:00Z`).
-
-          The value is formatted as [RFC 3339](https://www.ietf.org/rfc/rfc3339.txt)
-          with nano-seconds.
-        type: "string"
-        format: "date-time"
-        example: "2025-01-16T13:55:21.160452595Z"
-      pids_stats:
-        $ref: "#/definitions/ContainerPidsStats"
-      blkio_stats:
-        $ref: "#/definitions/ContainerBlkioStats"
-      num_procs:
-        description: |
-          The number of processors on the system.
-
-          This field is Windows-specific and always zero for Linux containers.
-        type: "integer"
-        format: "uint32"
-        example: 16
-      storage_stats:
-        $ref: "#/definitions/ContainerStorageStats"
       cpu_stats:
-        $ref: "#/definitions/ContainerCPUStats"
-      precpu_stats:
         $ref: "#/definitions/ContainerCPUStats"
       memory_stats:
         $ref: "#/definitions/ContainerMemoryStats"
@@ -5639,6 +5906,34 @@ definitions:
             tx_dropped: 0
             tx_errors: 0
             tx_packets: 9
+      pids_stats:
+        $ref: "#/definitions/ContainerPidsStats"
+      blkio_stats:
+        $ref: "#/definitions/ContainerBlkioStats"
+      num_procs:
+        description: |
+          The number of processors on the system.
+
+          This field is Windows-specific and always zero for Linux containers.
+        type: "integer"
+        format: "uint32"
+        example: 16
+      storage_stats:
+        $ref: "#/definitions/ContainerStorageStats"
+      preread:
+        description: |
+          Date and time at which this first sample was collected. This field
+          is not propagated if the "one-shot" option is set. If the "one-shot"
+          option is set, this field may be omitted, empty, or set to a default
+          date (`0001-01-01T00:00:00Z`).
+
+          The value is formatted as [RFC 3339](https://www.ietf.org/rfc/rfc3339.txt)
+          with nano-seconds.
+        type: "string"
+        format: "date-time"
+        example: "2025-01-16T13:55:21.160452595Z"
+      precpu_stats:
+        $ref: "#/definitions/ContainerCPUStats"
 
   ContainerBlkioStats:
     description: |
@@ -6356,15 +6651,6 @@ definitions:
         description: "Indicates if the host has memory swap limit support enabled."
         type: "boolean"
         example: true
-      KernelMemoryTCP:
-        description: |
-          Indicates if the host has kernel memory TCP limit support enabled. This
-          field is omitted if not supported.
-
-          Kernel memory TCP limits are not supported when using cgroups v2, which
-          does not support the corresponding `memory.kmem.tcp.limit_in_bytes` cgroup.
-        type: "boolean"
-        example: true
       CpuCfsPeriod:
         description: |
           Indicates if CPU CFS(Completely Fair Scheduler) period is supported by
@@ -6400,29 +6686,6 @@ definitions:
         description: "Indicates IPv4 forwarding is enabled."
         type: "boolean"
         example: true
-      BridgeNfIptables:
-        description: |
-          Indicates if `bridge-nf-call-iptables` is available on the host when
-          the daemon was started.
-
-          <p><br /></p>
-
-          > **Deprecated**: netfilter module is now loaded on-demand and no longer
-          > during daemon startup, making this field obsolete. This field is always
-          > `false` and will be removed in a API v1.49.
-        type: "boolean"
-        example: false
-      BridgeNfIp6tables:
-        description: |
-          Indicates if `bridge-nf-call-ip6tables` is available on the host.
-
-          <p><br /></p>
-
-          > **Deprecated**: netfilter module is now loaded on-demand, and no longer
-          > during daemon startup, making this field obsolete. This field is always
-          > `false` and will be removed in a API v1.49.
-        type: "boolean"
-        example: false
       Debug:
         description: |
           Indicates if the daemon is running in debug-mode / with debug-level
@@ -7837,7 +8100,6 @@ paths:
                 /volumes/data: {}
               WorkingDir: ""
               NetworkDisabled: false
-              MacAddress: "12:34:56:78:9a:bc"
               ExposedPorts:
                 22/tcp: {}
               StopSignal: "SIGTERM"
@@ -9369,15 +9631,6 @@ paths:
         - "application/json"
       operationId: "BuildPrune"
       parameters:
-        - name: "keep-storage"
-          in: "query"
-          description: |
-            Amount of disk space in bytes to keep for cache
-
-            > **Deprecated**: This parameter is deprecated and has been renamed to "reserved-space".
-            > It is kept for backward compatibility and will be removed in API v1.49.
-          type: "integer"
-          format: "int64"
         - name: "reserved-space"
           in: "query"
           description: "Amount of disk space in bytes to keep for cache"
@@ -9955,22 +10208,7 @@ paths:
         200:
           description: "An identity token was generated successfully."
           schema:
-            type: "object"
-            title: "SystemAuthResponse"
-            required: [Status]
-            properties:
-              Status:
-                description: "The status of the authentication"
-                type: "string"
-                x-nullable: false
-              IdentityToken:
-                description: "An opaque token used to authenticate a user after a successful login"
-                type: "string"
-                x-nullable: false
-          examples:
-            application/json:
-              Status: "Login Succeeded"
-              IdentityToken: "9cbaf023786cd7..."
+            $ref: "#/definitions/AuthResponse"
         204:
           description: "No error"
         401:
@@ -10206,7 +10444,8 @@ paths:
 
       operationId: "SystemEvents"
       produces:
-        - "application/json"
+        - "application/x-ndjson"
+        - "application/json-seq"
       responses:
         200:
           description: "no error"
@@ -10261,106 +10500,14 @@ paths:
             type: "object"
             title: "SystemDataUsageResponse"
             properties:
-              LayersSize:
-                type: "integer"
-                format: "int64"
-              Images:
-                type: "array"
-                items:
-                  $ref: "#/definitions/ImageSummary"
-              Containers:
-                type: "array"
-                items:
-                  $ref: "#/definitions/ContainerSummary"
-              Volumes:
-                type: "array"
-                items:
-                  $ref: "#/definitions/Volume"
-              BuildCache:
-                type: "array"
-                items:
-                  $ref: "#/definitions/BuildCache"
-            example:
-              LayersSize: 1092588
-              Images:
-                -
-                  Id: "sha256:2b8fd9751c4c0f5dd266fcae00707e67a2545ef34f9a29354585f93dac906749"
-                  ParentId: ""
-                  RepoTags:
-                    - "busybox:latest"
-                  RepoDigests:
-                    - "busybox@sha256:a59906e33509d14c036c8678d687bd4eec81ed7c4b8ce907b888c607f6a1e0e6"
-                  Created: 1466724217
-                  Size: 1092588
-                  SharedSize: 0
-                  Labels: {}
-                  Containers: 1
-              Containers:
-                -
-                  Id: "e575172ed11dc01bfce087fb27bee502db149e1a0fad7c296ad300bbff178148"
-                  Names:
-                    - "/top"
-                  Image: "busybox"
-                  ImageID: "sha256:2b8fd9751c4c0f5dd266fcae00707e67a2545ef34f9a29354585f93dac906749"
-                  Command: "top"
-                  Created: 1472592424
-                  Ports: []
-                  SizeRootFs: 1092588
-                  Labels: {}
-                  State: "exited"
-                  Status: "Exited (0) 56 minutes ago"
-                  HostConfig:
-                    NetworkMode: "default"
-                  NetworkSettings:
-                    Networks:
-                      bridge:
-                        IPAMConfig: null
-                        Links: null
-                        Aliases: null
-                        NetworkID: "d687bc59335f0e5c9ee8193e5612e8aee000c8c62ea170cfb99c098f95899d92"
-                        EndpointID: "8ed5115aeaad9abb174f68dcf135b49f11daf597678315231a32ca28441dec6a"
-                        Gateway: "172.18.0.1"
-                        IPAddress: "172.18.0.2"
-                        IPPrefixLen: 16
-                        IPv6Gateway: ""
-                        GlobalIPv6Address: ""
-                        GlobalIPv6PrefixLen: 0
-                        MacAddress: "02:42:ac:12:00:02"
-                  Mounts: []
-              Volumes:
-                -
-                  Name: "my-volume"
-                  Driver: "local"
-                  Mountpoint: "/var/lib/docker/volumes/my-volume/_data"
-                  Labels: null
-                  Scope: "local"
-                  Options: null
-                  UsageData:
-                    Size: 10920104
-                    RefCount: 2
-              BuildCache:
-                -
-                  ID: "hw53o5aio51xtltp5xjp8v7fx"
-                  Parents: []
-                  Type: "regular"
-                  Description: "pulled from docker.io/library/debian@sha256:234cb88d3020898631af0ccbbcca9a66ae7306ecd30c9720690858c1b007d2a0"
-                  InUse: false
-                  Shared: true
-                  Size: 0
-                  CreatedAt: "2021-06-28T13:31:01.474619385Z"
-                  LastUsedAt: "2021-07-07T22:02:32.738075951Z"
-                  UsageCount: 26
-                -
-                  ID: "ndlpt0hhvkqcdfkputsk4cq9c"
-                  Parents: ["ndlpt0hhvkqcdfkputsk4cq9c"]
-                  Type: "regular"
-                  Description: "mount / from exec /bin/sh -c echo 'Binary::apt::APT::Keep-Downloaded-Packages \"true\";' > /etc/apt/apt.conf.d/keep-cache"
-                  InUse: false
-                  Shared: true
-                  Size: 51
-                  CreatedAt: "2021-06-28T13:31:03.002625487Z"
-                  LastUsedAt: "2021-07-07T22:02:32.773909517Z"
-                  UsageCount: 26
+              ImagesDiskUsage:
+                $ref: "#/definitions/ImagesDiskUsage"
+              ContainersDiskUsage:
+                $ref: "#/definitions/ContainersDiskUsage"
+              VolumesDiskUsage:
+                $ref: "#/definitions/VolumesDiskUsage"
+              BuildCacheDiskUsage:
+                $ref: "#/definitions/BuildCacheDiskUsage"
         500:
           description: "server error"
           schema:
@@ -10375,6 +10522,12 @@ paths:
           items:
             type: "string"
             enum: ["container", "image", "volume", "build-cache"]
+        - name: "verbose"
+          in: "query"
+          description: |
+            Show detailed information on space usage.
+          type: "boolean"
+          default: false
       tags: ["System"]
   /images/{name}/get:
     get:
@@ -10854,7 +11007,7 @@ paths:
           required: true
           description: "Volume configuration"
           schema:
-            $ref: "#/definitions/VolumeCreateOptions"
+            $ref: "#/definitions/VolumeCreateRequest"
       tags: ["Volume"]
 
   /volumes/{name}:
@@ -11029,7 +11182,7 @@ paths:
           schema:
             type: "array"
             items:
-              $ref: "#/definitions/Network"
+              $ref: "#/definitions/NetworkSummary"
           examples:
             application/json:
               - Name: "bridge"
@@ -11120,7 +11273,7 @@ paths:
         200:
           description: "No error"
           schema:
-            $ref: "#/definitions/Network"
+            $ref: "#/definitions/NetworkInspect"
         404:
           description: "Network not found"
           schema:
@@ -11326,22 +11479,7 @@ paths:
           in: "body"
           required: true
           schema:
-            type: "object"
-            title: "NetworkConnectRequest"
-            properties:
-              Container:
-                type: "string"
-                description: "The ID or name of the container to connect to the network."
-              EndpointConfig:
-                $ref: "#/definitions/EndpointSettings"
-            example:
-              Container: "3613f73ba0e4"
-              EndpointConfig:
-                IPAMConfig:
-                  IPv4Address: "172.24.56.89"
-                  IPv6Address: "2001:db8::5689"
-                MacAddress: "02:42:ac:12:05:02"
-                Priority: 100
+            $ref: "#/definitions/NetworkConnectRequest"
       tags: ["Network"]
 
   /networks/{id}/disconnect:
@@ -11375,17 +11513,7 @@ paths:
           in: "body"
           required: true
           schema:
-            type: "object"
-            title: "NetworkDisconnectRequest"
-            properties:
-              Container:
-                type: "string"
-                description: |
-                  The ID or name of the container to disconnect from the network.
-              Force:
-                type: "boolean"
-                description: |
-                  Force the container to disconnect from the network.
+            $ref: "#/definitions/NetworkDisconnectRequest"
       tags: ["Network"]
   /networks/prune:
     post:

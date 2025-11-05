@@ -10,7 +10,7 @@ import (
 	"github.com/moby/moby/v2/daemon/libnetwork/driverapi"
 	"github.com/moby/moby/v2/daemon/libnetwork/netlabel"
 	"github.com/moby/moby/v2/daemon/libnetwork/types"
-	"github.com/moby/moby/v2/internal/testutils/storeutils"
+	"github.com/moby/moby/v2/internal/testutil/storeutils"
 	"gotest.tools/v3/assert"
 )
 
@@ -46,7 +46,7 @@ func testNetwork(networkType string, t *testing.T) {
 
 	epOptions := make(map[string]any)
 	te := &testEndpoint{}
-	err = d.CreateEndpoint(context.TODO(), "dummy", "ep1", te.Interface(), epOptions)
+	err = d.CreateEndpoint(t.Context(), "dummy", "ep1", te.Interface(), epOptions)
 	if err != nil {
 		t.Fatalf("Failed to create an endpoint : %s", err.Error())
 	}
@@ -133,6 +133,9 @@ func (test *testEndpoint) SetGateway(ipv4 net.IP) error {
 func (test *testEndpoint) SetGatewayIPv6(ipv6 net.IP) error {
 	return nil
 }
+
+func (test *testEndpoint) ForceGw4() {}
+func (test *testEndpoint) ForceGw6() {}
 
 func (test *testEndpoint) SetNames(_, _, _ string) error {
 	return nil

@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/moby/go-archive"
-	containertypes "github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/client"
 	"github.com/moby/moby/v2/integration/internal/container"
 	"golang.org/x/sys/unix"
 	"gotest.tools/v3/assert"
@@ -28,11 +28,11 @@ func TestNoOverlayfsWarningsAboutUndefinedBehaviors(t *testing.T) {
 		operation func(t *testing.T) error
 	}{
 		{name: "diff", operation: func(*testing.T) error {
-			_, err := apiClient.ContainerDiff(ctx, cID)
+			_, err := apiClient.ContainerDiff(ctx, cID, client.ContainerDiffOptions{})
 			return err
 		}},
 		{name: "export", operation: func(*testing.T) error {
-			rc, err := apiClient.ContainerExport(ctx, cID)
+			rc, err := apiClient.ContainerExport(ctx, cID, client.ContainerExportOptions{})
 			if err == nil {
 				defer rc.Close()
 				_, err = io.Copy(io.Discard, rc)
@@ -42,13 +42,14 @@ func TestNoOverlayfsWarningsAboutUndefinedBehaviors(t *testing.T) {
 		{name: "cp to container", operation: func(t *testing.T) error {
 			archiveReader, err := archive.Generate("new-file", "hello-world")
 			assert.NilError(t, err, "failed to create a temporary archive")
-			return apiClient.CopyToContainer(ctx, cID, "/", archiveReader, containertypes.CopyToContainerOptions{})
+			_, err = apiClient.CopyToContainer(ctx, cID, client.CopyToContainerOptions{DestinationPath: "/", Content: archiveReader})
+			return err
 		}},
 		{name: "cp from container", operation: func(*testing.T) error {
-			rc, _, err := apiClient.CopyFromContainer(ctx, cID, "/file")
+			res, err := apiClient.CopyFromContainer(ctx, cID, client.CopyFromContainerOptions{SourcePath: "/file"})
 			if err == nil {
-				defer rc.Close()
-				_, err = io.Copy(io.Discard, rc)
+				defer res.Content.Close()
+				_, err = io.Copy(io.Discard, res.Content)
 			}
 
 			return err

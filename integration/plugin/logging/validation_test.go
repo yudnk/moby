@@ -6,8 +6,8 @@ import (
 	"testing"
 
 	"github.com/moby/moby/client"
-	"github.com/moby/moby/v2/testutil"
-	"github.com/moby/moby/v2/testutil/daemon"
+	"github.com/moby/moby/v2/internal/testutil"
+	"github.com/moby/moby/v2/internal/testutil/daemon"
 	"gotest.tools/v3/assert"
 	"gotest.tools/v3/skip"
 )
@@ -29,9 +29,11 @@ func TestDaemonStartWithLogOpt(t *testing.T) {
 	c := d.NewClientT(t)
 
 	createPlugin(ctx, t, c, "test", "dummy", asLogDriver)
-	err := c.PluginEnable(ctx, "test", client.PluginEnableOptions{Timeout: 30})
+	_, err := c.PluginEnable(ctx, "test", client.PluginEnableOptions{Timeout: 30})
 	assert.Check(t, err)
-	defer c.PluginRemove(ctx, "test", client.PluginRemoveOptions{Force: true})
+	defer func() {
+		_, _ = c.PluginRemove(ctx, "test", client.PluginRemoveOptions{Force: true})
+	}()
 
 	d.Stop(t)
 	d.Start(t, "--iptables=false", "--ip6tables=false", "--log-driver=test", "--log-opt=foo=bar")

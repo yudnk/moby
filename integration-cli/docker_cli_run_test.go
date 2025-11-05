@@ -23,16 +23,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/client"
 	"github.com/moby/moby/client/pkg/stringid"
 	"github.com/moby/moby/v2/integration-cli/cli"
 	"github.com/moby/moby/v2/integration-cli/cli/build"
 	"github.com/moby/moby/v2/integration-cli/daemon"
-	"github.com/moby/moby/v2/internal/testutils/specialimage"
-	"github.com/moby/moby/v2/testutil"
-	testdaemon "github.com/moby/moby/v2/testutil/daemon"
-	"github.com/moby/moby/v2/testutil/fakecontext"
+	"github.com/moby/moby/v2/internal/testutil"
+	testdaemon "github.com/moby/moby/v2/internal/testutil/daemon"
+	"github.com/moby/moby/v2/internal/testutil/fakecontext"
+	"github.com/moby/moby/v2/internal/testutil/specialimage"
 	"github.com/moby/sys/mountinfo"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
@@ -289,9 +289,13 @@ func (s *DockerCLIRunSuite) TestRunWithNetAliasOnDefaultNetworks(c *testing.T) {
 
 	defaults := []string{"bridge", "host", "none"}
 	for _, nw := range defaults {
-		out, _, err := dockerCmdWithError("run", "-d", "--net", nw, "--net-alias", "alias_"+nw, "busybox", "top")
-		assert.ErrorContains(c, err, "")
-		assert.Assert(c, is.Contains(out, "network-scoped alias is supported only for containers in user defined networks"))
+		c.Run(nw, func(t *testing.T) {
+			out, _, err := dockerCmdWithError("run", "-d", "--net", nw, "--net-alias", "alias_"+nw, "busybox", "top")
+			assert.ErrorContains(t, err, "")
+
+			// TODO(thaJeztah): this validation should be on the daemon side (and already is?): https://github.com/moby/moby/blob/5856ec5348ccacf430f8b17fe8a6e30c579a7817/daemon/container_operations.go#L528-L539
+			assert.Assert(t, is.Contains(out, "network-scoped aliases are only supported for user-defined networks"))
+		})
 	}
 }
 
@@ -413,7 +417,7 @@ func (s *DockerCLIRunSuite) TestRunCreateVolumesInSymlinkDir(c *testing.T) {
 		containerPath = "/test/test"
 		cmd = "true"
 	}
-	buildImageSuccessfully(c, name, build.WithDockerfile(dockerFile))
+	cli.BuildCmd(c, name, build.WithDockerfile(dockerFile))
 	cli.DockerCmd(c, "run", "-v", containerPath, name, cmd)
 }
 
@@ -438,7 +442,7 @@ func (s *DockerCLIRunSuite) TestRunCreateVolumesInSymlinkDir2(c *testing.T) {
 		containerPath = "/test/test"
 		cmd = "true"
 	}
-	buildImageSuccessfully(c, name, build.WithDockerfile(dockerFile))
+	cli.BuildCmd(c, name, build.WithDockerfile(dockerFile))
 	cli.DockerCmd(c, "run", "-v", containerPath, name, cmd)
 }
 
@@ -1583,7 +1587,7 @@ func (s *DockerCLIRunSuite) TestRunCopyVolumeUIDGID(c *testing.T) {
 	// Not applicable on Windows as it does not support uid or gid in this way
 	testRequires(c, DaemonIsLinux)
 	name := "testrunvolumesuidgid"
-	buildImageSuccessfully(c, name, build.WithDockerfile(`FROM busybox
+	cli.BuildCmd(c, name, build.WithDockerfile(`FROM busybox
 		RUN echo 'dockerio:x:1001:1001::/bin:/bin/false' >> /etc/passwd
 		RUN echo 'dockerio:x:1001:' >> /etc/group
 		RUN mkdir -p /hello && touch /hello/test && chown dockerio.dockerio /hello`))
@@ -1602,7 +1606,7 @@ func (s *DockerCLIRunSuite) TestRunCopyVolumeContent(c *testing.T) {
 	// that copies from the image to the volume.
 	testRequires(c, DaemonIsLinux)
 	name := "testruncopyvolumecontent"
-	buildImageSuccessfully(c, name, build.WithDockerfile(`FROM busybox
+	cli.BuildCmd(c, name, build.WithDockerfile(`FROM busybox
 		RUN mkdir -p /hello/local && echo hello > /hello/local/world`))
 
 	// Test that the content is copied from the image to the volume
@@ -1614,7 +1618,7 @@ func (s *DockerCLIRunSuite) TestRunCopyVolumeContent(c *testing.T) {
 
 func (s *DockerCLIRunSuite) TestRunCleanupCmdOnEntrypoint(c *testing.T) {
 	name := "testrunmdcleanuponentrypoint"
-	buildImageSuccessfully(c, name, build.WithDockerfile(`FROM busybox
+	cli.BuildCmd(c, name, build.WithDockerfile(`FROM busybox
 		ENTRYPOINT ["echo"]
 		CMD ["testingpoint"]`))
 
@@ -2074,7 +2078,7 @@ func (s *DockerCLIRunSuite) TestVolumesNoCopyData(c *testing.T) {
 	// are pre-populated such as is built in the dockerfile used in this test.
 	testRequires(c, DaemonIsLinux)
 	prefix, slash := getPrefixAndSlashFromDaemonPlatform()
-	buildImageSuccessfully(c, "dataimage", build.WithDockerfile(`FROM busybox
+	cli.BuildCmd(c, "dataimage", build.WithDockerfile(`FROM busybox
 		RUN ["mkdir", "-p", "/foo"]
 		RUN ["touch", "/foo/bar"]`))
 	cli.DockerCmd(c, "run", "--name", "test", "-v", prefix+slash+"foo", "busybox")
@@ -2105,7 +2109,7 @@ func (s *DockerCLIRunSuite) TestRunNoOutputFromPullInStdout(c *testing.T) {
 func (s *DockerCLIRunSuite) TestRunVolumesCleanPaths(c *testing.T) {
 	testRequires(c, testEnv.IsLocalDaemon)
 	prefix, slash := getPrefixAndSlashFromDaemonPlatform()
-	buildImageSuccessfully(c, "run_volumes_clean_paths", build.WithDockerfile(`FROM busybox
+	cli.BuildCmd(c, "run_volumes_clean_paths", build.WithDockerfile(`FROM busybox
 		VOLUME `+prefix+`/foo/`))
 	cli.DockerCmd(c, "run", "-v", prefix+"/foo", "-v", prefix+"/bar/", "--name", "dark_helmet", "run_volumes_clean_paths")
 
@@ -2169,14 +2173,13 @@ func (s *DockerCLIRunSuite) TestRunAllowPortRangeThroughExpose(c *testing.T) {
 	id = strings.TrimSpace(id)
 
 	portstr := inspectFieldJSON(c, id, "NetworkSettings.Ports")
-	var ports container.PortMap
+	var ports network.PortMap
 	if err := json.Unmarshal([]byte(portstr), &ports); err != nil {
 		c.Fatal(err)
 	}
 	for port, binding := range ports {
-		portnum, _ := strconv.Atoi(strings.Split(string(port), "/")[0])
-		if portnum < 3000 || portnum > 3003 {
-			c.Fatalf("Port %d is out of range ", portnum)
+		if port.Num() < 3000 || port.Num() > 3003 {
+			c.Fatalf("Port %d is out of range", port.Num())
 		}
 		if len(binding) == 0 || binding[0].HostPort == "" {
 			c.Fatalf("Port is not mapped for the port %s", port)
@@ -2353,17 +2356,24 @@ func (s *DockerCLIRunSuite) TestRunModeUTSHost(c *testing.T) {
 func (s *DockerCLIRunSuite) TestRunTLSVerify(c *testing.T) {
 	// Remote daemons use TLS and this test is not applicable when TLS is required.
 	testRequires(c, testEnv.IsLocalDaemon)
-	if out, code, err := dockerCmdWithError("ps"); err != nil || code != 0 {
+	if out, code, err := dockerCmdWithError("version"); err != nil || code != 0 {
 		c.Fatalf("Should have worked: %v:\n%v", err, out)
+	}
+
+	var notFoundErr string
+	if runtime.GOOS == "windows" {
+		notFoundErr = "ca.pem: The system cannot find the file specified"
+	} else {
+		notFoundErr = "ca.pem: no such file or directory"
 	}
 
 	// Regardless of whether we specify true or false we need to
 	// test to make sure tls is turned on if --tlsverify is specified at all
-	result := cli.Docker(cli.Args("--tlsverify=false", "ps"))
-	result.Assert(c, icmd.Expected{ExitCode: 1, Err: "error during connect"})
+	result := cli.Docker(cli.Args("--tlsverify=false", "version"))
+	result.Assert(c, icmd.Expected{ExitCode: 1, Err: notFoundErr})
 
-	result = cli.Docker(cli.Args("--tlsverify=true", "ps"))
-	result.Assert(c, icmd.Expected{ExitCode: 1, Err: "cert"})
+	result = cli.Docker(cli.Args("--tlsverify=true", "version"))
+	result.Assert(c, icmd.Expected{ExitCode: 1, Err: notFoundErr})
 }
 
 func (s *DockerCLIRunSuite) TestRunPortFromDockerRangeInUse(c *testing.T) {
@@ -2407,10 +2417,15 @@ func (s *DockerCLIRunSuite) TestRunTTYWithPipe(c *testing.T) {
 		}
 
 		expected := "the input device is not a TTY"
-		if runtime.GOOS == "windows" {
-			expected += ".  If you are using mintty, try prefixing the command with 'winpty'"
-		}
-		if out, _, err := runCommandWithOutput(cmd); err == nil {
+		res := icmd.RunCmd(icmd.Cmd{
+			Command: cmd.Args,
+			Env:     cmd.Env,
+			Dir:     cmd.Dir,
+			Stdin:   cmd.Stdin,
+			Stdout:  cmd.Stdout,
+		})
+		out, err := res.Combined(), res.Error
+		if err == nil {
 			errChan <- errors.New("run should have failed")
 			return
 		} else if !strings.Contains(out, expected) {
@@ -2502,16 +2517,15 @@ func (s *DockerCLIRunSuite) TestRunAllowPortRangeThroughPublish(c *testing.T) {
 	id = strings.TrimSpace(id)
 	portStr := inspectFieldJSON(c, id, "NetworkSettings.Ports")
 
-	var ports container.PortMap
+	var ports network.PortMap
 	err := json.Unmarshal([]byte(portStr), &ports)
 	assert.NilError(c, err, "failed to unmarshal: %v", portStr)
 	for port, binding := range ports {
-		portnum, _ := strconv.Atoi(strings.Split(string(port), "/")[0])
-		if portnum < 3000 || portnum > 3003 {
-			c.Fatalf("Port %d is out of range ", portnum)
+		if port.Num() < 3000 || port.Num() > 3003 {
+			c.Fatalf("Port %d is out of range", port.Num())
 		}
 		if len(binding) == 0 || binding[0].HostPort == "" {
-			c.Fatal("Port is not mapped for the port "+port, id)
+			c.Fatalf("Port is not mapped for the port %s", port)
 		}
 	}
 }
@@ -2805,7 +2819,7 @@ func (s *DockerCLIRunSuite) TestRunUnshareProc(c *testing.T) {
 
 	go func() {
 		name := "acidburn"
-		out, _, err := dockerCmdWithError("run", "--name", name, "--security-opt", "seccomp=unconfined", "debian:bookworm-slim", "unshare", "-p", "-m", "-f", "-r", "--mount-proc=/proc", "mount")
+		out, _, err := dockerCmdWithError("run", "--name", name, "--security-opt", "seccomp=unconfined", "debian:trixie-slim", "unshare", "-p", "-m", "-f", "-r", "--mount-proc=/proc", "mount")
 		if err == nil ||
 			(!strings.Contains(strings.ToLower(out), "permission denied") && !strings.Contains(strings.ToLower(out), "operation not permitted")) {
 			errChan <- fmt.Errorf("unshare with --mount-proc should have failed with 'permission denied' or 'operation not permitted', got: %s, %v", out, err)
@@ -2816,7 +2830,7 @@ func (s *DockerCLIRunSuite) TestRunUnshareProc(c *testing.T) {
 
 	go func() {
 		name := "cereal"
-		out, _, err := dockerCmdWithError("run", "--name", name, "--security-opt", "seccomp=unconfined", "debian:bookworm-slim", "unshare", "-p", "-m", "-f", "-r", "mount", "-t", "proc", "none", "/proc")
+		out, _, err := dockerCmdWithError("run", "--name", name, "--security-opt", "seccomp=unconfined", "debian:trixie-slim", "unshare", "-p", "-m", "-f", "-r", "mount", "-t", "proc", "none", "/proc")
 		if err == nil ||
 			(!strings.Contains(strings.ToLower(out), "mount: cannot mount none") && !strings.Contains(strings.ToLower(out), "permission denied") && !strings.Contains(strings.ToLower(out), "operation not permitted")) {
 			errChan <- fmt.Errorf("unshare and mount of /proc should have failed with 'mount: cannot mount none' or 'permission denied', got: %s, %v", out, err)
@@ -2828,7 +2842,7 @@ func (s *DockerCLIRunSuite) TestRunUnshareProc(c *testing.T) {
 	/* Ensure still fails if running privileged with the default policy */
 	go func() {
 		name := "crashoverride"
-		out, _, err := dockerCmdWithError("run", "--privileged", "--security-opt", "seccomp=unconfined", "--security-opt", "apparmor=docker-default", "--name", name, "debian:bookworm-slim", "unshare", "-p", "-m", "-f", "-r", "mount", "-t", "proc", "none", "/proc")
+		out, _, err := dockerCmdWithError("run", "--privileged", "--security-opt", "seccomp=unconfined", "--security-opt", "apparmor=docker-default", "--name", name, "debian:trixie-slim", "unshare", "-p", "-m", "-f", "-r", "mount", "-t", "proc", "none", "/proc")
 		if err == nil ||
 			(!strings.Contains(strings.ToLower(out), "mount: cannot mount none") && !strings.Contains(strings.ToLower(out), "permission denied") && !strings.Contains(strings.ToLower(out), "operation not permitted")) {
 			errChan <- fmt.Errorf("privileged unshare with apparmor should have failed with 'mount: cannot mount none' or 'permission denied', got: %s, %v", out, err)
@@ -3100,10 +3114,10 @@ func (s *DockerCLIRunSuite) TestRunWithUlimits(c *testing.T) {
 	// Not applicable on Windows as uses Unix specific functionality
 	testRequires(c, DaemonIsLinux)
 
-	out := cli.DockerCmd(c, "run", "--name=testulimits", "--ulimit", "nofile=42", "busybox", "/bin/sh", "-c", "ulimit -n").Combined()
+	out := cli.DockerCmd(c, "run", "--name=testulimits", "--ulimit", "nofile=50", "busybox", "/bin/sh", "-c", "ulimit -n").Combined()
 	ul := strings.TrimSpace(out)
-	if ul != "42" {
-		c.Fatalf("expected `ulimit -n` to be 42, got %s", ul)
+	if ul != "50" {
+		c.Fatalf("expected `ulimit -n` to be 50, got %s", ul)
 	}
 }
 
@@ -3597,7 +3611,7 @@ func (s *DockerCLIRunSuite) TestRunInitLayerPathOwnership(c *testing.T) {
 	// Not applicable on Windows as it does not support Linux uid/gid ownership
 	testRequires(c, DaemonIsLinux)
 	name := "testetcfileownership"
-	buildImageSuccessfully(c, name, build.WithDockerfile(`FROM busybox
+	cli.BuildCmd(c, name, build.WithDockerfile(`FROM busybox
 		RUN echo 'dockerio:x:1001:1001::/bin:/bin/false' >> /etc/passwd
 		RUN echo 'dockerio:x:1001:' >> /etc/group
 		RUN chown dockerio:dockerio /etc`))
@@ -3649,7 +3663,7 @@ func (s *DockerCLIRunSuite) TestRunNamedVolumeCopyImageData(c *testing.T) {
 	testRequires(c, DaemonIsLinux)
 
 	testImg := "testvolumecopy"
-	buildImageSuccessfully(c, testImg, build.WithDockerfile(`
+	cli.BuildCmd(c, testImg, build.WithDockerfile(`
 	FROM busybox
 	RUN mkdir -p /foo && echo hello > /foo/hello
 	`))
@@ -3683,14 +3697,14 @@ func (s *DockerCLIRunSuite) TestRunNamedVolumesFromNotRemoved(c *testing.T) {
 	cid := cli.DockerCmd(c, "run", "-d", "--name=parent", "-v", "test:"+prefix+"/foo", "-v", prefix+"/bar", "busybox", "true").Stdout()
 	cli.DockerCmd(c, "run", "--name=child", "--volumes-from=parent", "busybox", "true")
 
-	apiClient, err := client.NewClientWithOpts(client.FromEnv)
+	apiClient, err := client.New(client.FromEnv)
 	assert.NilError(c, err)
 	defer apiClient.Close()
 
-	container, err := apiClient.ContainerInspect(testutil.GetContext(c), strings.TrimSpace(cid))
+	inspect, err := apiClient.ContainerInspect(testutil.GetContext(c), strings.TrimSpace(cid), client.ContainerInspectOptions{})
 	assert.NilError(c, err)
 	var vname string
-	for _, v := range container.Mounts {
+	for _, v := range inspect.Container.Mounts {
 		if v.Name != "test" {
 			vname = v.Name
 		}
@@ -3768,7 +3782,7 @@ func (s *DockerCLIRunSuite) TestRunVolumeWithOneCharacter(c *testing.T) {
 
 func (s *DockerCLIRunSuite) TestRunVolumeCopyFlag(c *testing.T) {
 	testRequires(c, DaemonIsLinux) // Windows does not support copying data from image to the volume
-	buildImageSuccessfully(c, "volumecopy", build.WithDockerfile(`FROM busybox
+	cli.BuildCmd(c, "volumecopy", build.WithDockerfile(`FROM busybox
 		RUN mkdir /foo && echo hello > /foo/bar
 		CMD cat /foo/bar`))
 	cli.DockerCmd(c, "volume", "create", "test")
@@ -3925,13 +3939,13 @@ func (s *DockerDaemonSuite) TestRunWithUlimitAndDaemonDefault(c *testing.T) {
 	assert.NilError(c, err)
 	assert.Assert(c, is.Contains(out, "[nofile=65535:65535]"))
 	name = "test-B"
-	_, err = d.Cmd("run", "--name", name, "--ulimit=nofile=42", "-d", "busybox", "top")
+	_, err = d.Cmd("run", "--name", name, "--ulimit=nofile=50", "-d", "busybox", "top")
 	assert.NilError(c, err)
 	assert.NilError(c, d.WaitRun(name))
 
 	out, err = d.Cmd("inspect", "--format", "{{.HostConfig.Ulimits}}", name)
 	assert.NilError(c, err)
-	assert.Assert(c, is.Contains(out, "[nofile=42:42]"))
+	assert.Assert(c, is.Contains(out, "[nofile=50:50]"))
 }
 
 func (s *DockerCLIRunSuite) TestRunStoppedLoggingDriverNoLeak(c *testing.T) {

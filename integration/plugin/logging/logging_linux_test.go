@@ -8,11 +8,10 @@ import (
 	"testing"
 	"time"
 
-	containertypes "github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
 	"github.com/moby/moby/v2/integration/internal/container"
-	"github.com/moby/moby/v2/testutil"
-	"github.com/moby/moby/v2/testutil/daemon"
+	"github.com/moby/moby/v2/internal/testutil"
+	"github.com/moby/moby/v2/internal/testutil/daemon"
 	"gotest.tools/v3/assert"
 	"gotest.tools/v3/skip"
 )
@@ -32,9 +31,12 @@ func TestContinueAfterPluginCrash(t *testing.T) {
 
 	ctxT, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
-	assert.Assert(t, apiclient.PluginEnable(ctxT, "test", client.PluginEnableOptions{Timeout: 30}))
+	_, err := apiclient.PluginEnable(ctxT, "test", client.PluginEnableOptions{Timeout: 30})
+	assert.NilError(t, err)
 	cancel()
-	defer apiclient.PluginRemove(ctx, "test", client.PluginRemoveOptions{Force: true})
+	defer func() {
+		_, _ = apiclient.PluginRemove(ctx, "test", client.PluginRemoveOptions{Force: true})
+	}()
 
 	ctxT, cancel = context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
@@ -47,10 +49,10 @@ func TestContinueAfterPluginCrash(t *testing.T) {
 		),
 	)
 	cancel()
-	defer apiclient.ContainerRemove(ctx, id, containertypes.RemoveOptions{Force: true})
+	defer apiclient.ContainerRemove(ctx, id, client.ContainerRemoveOptions{Force: true})
 
 	// Attach to the container to make sure it's written a few times to stdout
-	attach, err := apiclient.ContainerAttach(ctx, id, containertypes.AttachOptions{Stream: true, Stdout: true})
+	attach, err := apiclient.ContainerAttach(ctx, id, client.ContainerAttachOptions{Stream: true, Stdout: true})
 	assert.NilError(t, err)
 
 	chErr := make(chan error, 1)

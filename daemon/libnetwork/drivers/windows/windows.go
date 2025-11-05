@@ -27,7 +27,7 @@ import (
 	"github.com/moby/moby/v2/daemon/libnetwork/datastore"
 	"github.com/moby/moby/v2/daemon/libnetwork/driverapi"
 	"github.com/moby/moby/v2/daemon/libnetwork/netlabel"
-	"github.com/moby/moby/v2/daemon/libnetwork/portmapper"
+	"github.com/moby/moby/v2/daemon/libnetwork/portallocator"
 	"github.com/moby/moby/v2/daemon/libnetwork/scope"
 	"github.com/moby/moby/v2/daemon/libnetwork/types"
 	"go.opentelemetry.io/otel"
@@ -94,12 +94,12 @@ type hnsEndpoint struct {
 }
 
 type hnsNetwork struct {
-	id         string
-	created    bool
-	config     *networkConfiguration
-	endpoints  map[string]*hnsEndpoint // key: endpoint id
-	driver     *driver                 // The network's driver
-	portMapper *portmapper.PortMapper
+	id        string
+	created   bool
+	config    *networkConfiguration
+	endpoints map[string]*hnsEndpoint // key: endpoint id
+	driver    *driver                 // The network's driver
+	pa        *portallocator.OSAllocator
 	sync.Mutex
 }
 
@@ -308,11 +308,11 @@ func (ncfg *networkConfiguration) processIPAM(id string, ipamV4Data, ipamV6Data 
 
 func (d *driver) createNetwork(config *networkConfiguration) *hnsNetwork {
 	network := &hnsNetwork{
-		id:         config.ID,
-		endpoints:  make(map[string]*hnsEndpoint),
-		config:     config,
-		driver:     d,
-		portMapper: portmapper.New(),
+		id:        config.ID,
+		endpoints: make(map[string]*hnsEndpoint),
+		config:    config,
+		driver:    d,
+		pa:        portallocator.New(),
 	}
 
 	d.Lock()
@@ -422,6 +422,7 @@ func (d *driver) CreateNetwork(ctx context.Context, id string, option map[string
 
 		config.HnsID = hnsresponse.Id
 		genData[HNSID] = config.HnsID
+		genData[NetworkName] = network.Name
 		n.created = true
 
 		defer func() {
@@ -609,14 +610,6 @@ func parseEndpointOptions(epOptions map[string]any) (*endpointOption, error) {
 		}
 	}
 
-	if opt, ok := epOptions[netlabel.DNSServers]; ok {
-		if dns, ok := opt.([]string); ok {
-			ec.DNSServers = dns
-		} else {
-			return nil, fmt.Errorf("Invalid endpoint configuration")
-		}
-	}
-
 	if opt, ok := epOptions[DisableICC]; ok {
 		if disableICC, ok := opt.(bool); ok {
 			ec.DisableICC = disableICC
@@ -634,6 +627,17 @@ func parseEndpointOptions(epOptions map[string]any) (*endpointOption, error) {
 	}
 
 	return ec, nil
+}
+
+func ParseDNSServers(epOptions map[string]any) (string, error) {
+	if opt, ok := epOptions[netlabel.DNSServers]; ok {
+		if dns, ok := opt.([]string); ok {
+			return strings.Join(dns, ","), nil
+		} else {
+			return "", fmt.Errorf("Invalid endpoint configuration")
+		}
+	}
+	return "", nil
 }
 
 // ParseEndpointConnectivity parses options passed to CreateEndpoint, specifically port bindings, and store in a endpointConnectivity object.
@@ -701,19 +705,14 @@ func (d *driver) CreateEndpoint(ctx context.Context, nid, eid string, ifInfo dri
 	portMapping := epConnectivity.PortBindings
 
 	if n.config.Type == "l2bridge" || n.config.Type == "l2tunnel" {
-		ip := net.IPv4(0, 0, 0, 0)
-		if ifInfo.Address() != nil {
-			ip = ifInfo.Address().IP
-		}
-
-		portMapping, err = AllocatePorts(n.portMapper, portMapping, ip)
+		portMapping, err = AllocatePorts(n.pa, portMapping)
 		if err != nil {
 			return err
 		}
 
 		defer func() {
 			if err != nil {
-				ReleasePorts(n.portMapper, portMapping)
+				ReleasePorts(n.pa, portMapping)
 			}
 		}()
 	}
@@ -733,7 +732,11 @@ func (d *driver) CreateEndpoint(ctx context.Context, nid, eid string, ifInfo dri
 		endpointStruct.IPAddress = ifInfo.Address().IP
 	}
 
-	endpointStruct.DNSServerList = strings.Join(epOption.DNSServers, ",")
+	dnsServerList, err := ParseDNSServers(epOptions)
+	if err != nil {
+		return err
+	}
+	endpointStruct.DNSServerList = dnsServerList
 
 	// overwrite the ep DisableDNS option if DisableGatewayDNS was set to true during the network creation option
 	if n.config.DisableGatewayDNS {
@@ -828,7 +831,7 @@ func (d *driver) DeleteEndpoint(nid, eid string) error {
 	}
 
 	if n.config.Type == "l2bridge" || n.config.Type == "l2tunnel" {
-		ReleasePorts(n.portMapper, ep.portMapping)
+		ReleasePorts(n.pa, ep.portMapping)
 	}
 
 	n.Lock()
@@ -941,14 +944,6 @@ func (d *driver) Leave(nid, eid string) error {
 		}
 	}
 	return nil
-}
-
-func (d *driver) NetworkAllocate(id string, option map[string]string, ipV4Data, ipV6Data []driverapi.IPAMData) (map[string]string, error) {
-	return nil, types.NotImplementedErrorf("not implemented")
-}
-
-func (d *driver) NetworkFree(id string) error {
-	return types.NotImplementedErrorf("not implemented")
 }
 
 func (d *driver) Type() string {

@@ -1,7 +1,6 @@
 package client
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -14,7 +13,6 @@ import (
 
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/moby/moby/api/types/common"
-	"github.com/moby/moby/api/types/container"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 )
@@ -52,30 +50,19 @@ func TestSetHostHeader(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.host, func(t *testing.T) {
-			hostURL, err := ParseHostURL(tc.host)
+			client, err := New(WithMockClient(func(req *http.Request) (*http.Response, error) {
+				if err := assertRequest(req, http.MethodGet, testEndpoint); err != nil {
+					return nil, err
+				}
+				if req.Host != tc.expectedHost {
+					return nil, fmt.Errorf("wxpected host %q, got %q", tc.expectedHost, req.Host)
+				}
+				if req.URL.Host != tc.expectedURLHost {
+					return nil, fmt.Errorf("expected URL host %q, got %q", tc.expectedURLHost, req.URL.Host)
+				}
+				return mockResponse(http.StatusOK, nil, "")(req)
+			}), WithHost(tc.host))
 			assert.NilError(t, err)
-
-			client := &Client{
-				client: newMockClient(func(req *http.Request) (*http.Response, error) {
-					if !strings.HasPrefix(req.URL.Path, testEndpoint) {
-						return nil, fmt.Errorf("expected URL %q, got %q", testEndpoint, req.URL)
-					}
-					if req.Host != tc.expectedHost {
-						return nil, fmt.Errorf("wxpected host %q, got %q", tc.expectedHost, req.Host)
-					}
-					if req.URL.Host != tc.expectedURLHost {
-						return nil, fmt.Errorf("expected URL host %q, got %q", tc.expectedURLHost, req.URL.Host)
-					}
-					return &http.Response{
-						StatusCode: http.StatusOK,
-						Body:       io.NopCloser(bytes.NewReader([]byte(""))),
-					}, nil
-				}),
-
-				proto:    hostURL.Scheme,
-				addr:     hostURL.Host,
-				basePath: hostURL.Path,
-			}
 
 			_, err = client.sendRequest(context.Background(), http.MethodGet, testEndpoint, nil, nil, nil)
 			assert.NilError(t, err)
@@ -83,14 +70,13 @@ func TestSetHostHeader(t *testing.T) {
 	}
 }
 
-// TestPlainTextError tests the server returning an error in plain text for
-// backwards compatibility with API versions <1.24. All other tests use
-// errors returned as JSON
+// TestPlainTextError tests the server returning an error in plain text.
+// API versions < 1.24 returned plain text errors, but we may encounter
+// other situations where a non-JSON error is returned.
 func TestPlainTextError(t *testing.T) {
-	client := &Client{
-		client: newMockClient(plainTextErrorMock(http.StatusInternalServerError, "Server error")),
-	}
-	_, err := client.ContainerList(context.Background(), container.ListOptions{})
+	client, err := New(WithMockClient(mockResponse(http.StatusInternalServerError, nil, "Server error")))
+	assert.NilError(t, err)
+	_, err = client.ContainerList(context.Background(), ContainerListOptions{})
 	assert.Check(t, is.ErrorType(err, cerrdefs.IsInternal))
 }
 
@@ -209,17 +195,14 @@ func TestResponseErrors(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.doc, func(t *testing.T) {
-			client := &Client{
-				version: tc.apiVersion,
-				client: newMockClient(func(req *http.Request) (*http.Response, error) {
-					return &http.Response{
-						StatusCode: http.StatusBadRequest,
-						Header:     http.Header{"Content-Type": []string{tc.contentType}},
-						Body:       io.NopCloser(bytes.NewReader([]byte(tc.response))),
-					}, nil
-				}),
+			client, err := New(WithMockClient(func(req *http.Request) (*http.Response, error) {
+				return mockResponse(http.StatusBadRequest, http.Header{"Content-Type": []string{tc.contentType}}, tc.response)(req)
+			}))
+			if tc.apiVersion != "" {
+				client, err = New(WithHTTPClient(client.client), WithVersion(tc.apiVersion))
 			}
-			_, err := client.Ping(context.Background())
+			assert.NilError(t, err)
+			_, err = client.Ping(t.Context(), PingOptions{})
 			assert.Check(t, is.Error(err, tc.expected))
 			assert.Check(t, is.ErrorType(err, cerrdefs.IsInvalidArgument))
 		})
@@ -228,18 +211,17 @@ func TestResponseErrors(t *testing.T) {
 
 func TestInfiniteError(t *testing.T) {
 	infinitR := rand.New(rand.NewSource(42))
-	client := &Client{
-		client: newMockClient(func(req *http.Request) (*http.Response, error) {
-			resp := &http.Response{
-				StatusCode: http.StatusInternalServerError,
-				Header:     http.Header{},
-				Body:       io.NopCloser(infinitR),
-			}
-			return resp, nil
-		}),
-	}
+	client, err := New(WithMockClient(func(req *http.Request) (*http.Response, error) {
+		resp := &http.Response{
+			StatusCode: http.StatusInternalServerError,
+			Header:     http.Header{},
+			Body:       io.NopCloser(infinitR),
+		}
+		return resp, nil
+	}))
+	assert.NilError(t, err)
 
-	_, err := client.Ping(context.Background())
+	_, err = client.Ping(t.Context(), PingOptions{})
 	assert.Check(t, is.ErrorType(err, cerrdefs.IsInternal))
 	assert.Check(t, is.ErrorContains(err, "request returned Internal Server Error"))
 }
@@ -247,36 +229,34 @@ func TestInfiniteError(t *testing.T) {
 func TestCanceledContext(t *testing.T) {
 	const testEndpoint = "/test"
 
-	client := &Client{
-		client: newMockClient(func(req *http.Request) (*http.Response, error) {
-			assert.Check(t, is.ErrorType(req.Context().Err(), context.Canceled))
-			return nil, context.Canceled
-		}),
-	}
+	client, err := New(WithMockClient(func(req *http.Request) (*http.Response, error) {
+		assert.Check(t, is.ErrorType(req.Context().Err(), context.Canceled))
+		return nil, context.Canceled
+	}))
+	assert.NilError(t, err)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err := client.sendRequest(ctx, http.MethodGet, testEndpoint, nil, nil, nil)
+	_, err = client.sendRequest(ctx, http.MethodGet, testEndpoint, nil, nil, nil)
 	assert.Check(t, is.ErrorIs(err, context.Canceled))
 }
 
 func TestDeadlineExceededContext(t *testing.T) {
 	const testEndpoint = "/test"
 
-	client := &Client{
-		client: newMockClient(func(req *http.Request) (*http.Response, error) {
-			assert.Check(t, is.ErrorType(req.Context().Err(), context.DeadlineExceeded))
-			return nil, context.DeadlineExceeded
-		}),
-	}
+	client, err := New(WithMockClient(func(req *http.Request) (*http.Response, error) {
+		assert.Check(t, is.ErrorType(req.Context().Err(), context.DeadlineExceeded))
+		return nil, context.DeadlineExceeded
+	}))
+	assert.NilError(t, err)
 
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now())
 	defer cancel()
 
 	<-ctx.Done()
 
-	_, err := client.sendRequest(ctx, http.MethodGet, testEndpoint, nil, nil, nil)
+	_, err = client.sendRequest(ctx, http.MethodGet, testEndpoint, nil, nil, nil)
 	assert.Check(t, is.ErrorIs(err, context.DeadlineExceeded))
 }
 

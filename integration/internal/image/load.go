@@ -10,9 +10,9 @@ import (
 	"testing"
 
 	"github.com/moby/go-archive"
+	"github.com/moby/moby/api/types/jsonstream"
 	"github.com/moby/moby/client"
-	"github.com/moby/moby/client/pkg/jsonmessage"
-	"github.com/moby/moby/v2/internal/testutils/specialimage"
+	"github.com/moby/moby/v2/internal/testutil/specialimage"
 	"gotest.tools/v3/assert"
 )
 
@@ -30,10 +30,10 @@ func Load(ctx context.Context, t *testing.T, apiClient client.APIClient, imageFu
 	resp, err := apiClient.ImageLoad(ctx, rc, client.ImageLoadWithQuiet(true))
 	assert.NilError(t, err, "Failed to load dangling image")
 
-	defer resp.Body.Close()
+	defer resp.Close()
 
 	if !assert.Check(t, err) {
-		respBody, err := io.ReadAll(resp.Body)
+		respBody, err := io.ReadAll(resp)
 		if err != nil {
 			t.Fatalf("Failed to read response body: %v", err)
 			return ""
@@ -41,12 +41,12 @@ func Load(ctx context.Context, t *testing.T, apiClient client.APIClient, imageFu
 		t.Fatalf("Failed load: %s", string(respBody))
 	}
 
-	all, err := io.ReadAll(resp.Body)
+	all, err := io.ReadAll(resp)
 	assert.NilError(t, err)
 
 	decoder := json.NewDecoder(bytes.NewReader(all))
 	for {
-		var msg jsonmessage.JSONMessage
+		var msg jsonstream.Message
 		err := decoder.Decode(&msg)
 		if errors.Is(err, io.EOF) {
 			break

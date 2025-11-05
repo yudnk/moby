@@ -11,7 +11,6 @@ import (
 	"github.com/moby/moby/v2/daemon/builder"
 	"github.com/moby/moby/v2/daemon/internal/image"
 	"github.com/moby/moby/v2/daemon/internal/layer"
-	"github.com/moby/moby/v2/dockerversion"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/pkg/errors"
 )
@@ -134,19 +133,18 @@ func (ic *ImageCache) restoreCachedImage(parent, target *image.Image, cfg *conta
 		lenHistory = len(parent.History)
 	}
 	history = append(history, target.History[lenHistory])
-	layer := getLayerForHistoryIndex(target, lenHistory)
-	if layer != "" {
-		rootFS.Append(layer)
+	layerDiffID := getLayerForHistoryIndex(target, lenHistory)
+	if layerDiffID != "" {
+		rootFS.Append(layerDiffID)
 	}
 
 	restoredImg := image.Image{
 		V1Image: image.V1Image{
-			DockerVersion: dockerversion.Version,
-			Config:        cfg,
-			Architecture:  target.Architecture,
-			OS:            target.OS,
-			Author:        target.Author,
-			Created:       history[len(history)-1].Created,
+			Config:       cfg,
+			Architecture: target.Architecture,
+			OS:           target.OS,
+			Author:       target.Author,
+			Created:      history[len(history)-1].Created,
 		},
 		RootFS:     rootFS,
 		History:    history,
@@ -154,7 +152,7 @@ func (ic *ImageCache) restoreCachedImage(parent, target *image.Image, cfg *conta
 		OSVersion:  target.OSVersion,
 	}
 
-	imgID, err := ic.store.Create(parent, restoredImg, layer)
+	imgID, err := ic.store.Create(parent, restoredImg, layerDiffID)
 	if err != nil {
 		return "", errors.Wrap(err, "failed to create cache image")
 	}

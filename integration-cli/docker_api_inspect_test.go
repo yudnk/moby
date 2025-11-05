@@ -8,7 +8,7 @@ import (
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
 	"github.com/moby/moby/v2/integration-cli/cli"
-	"github.com/moby/moby/v2/testutil"
+	"github.com/moby/moby/v2/internal/testutil"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 )
@@ -72,7 +72,7 @@ func (s *DockerAPISuite) TestInspectAPIContainerVolumeDriver(c *testing.T) {
 
 func (s *DockerAPISuite) TestInspectAPIImageResponse(c *testing.T) {
 	cli.DockerCmd(c, "tag", "busybox:latest", "busybox:mytag")
-	apiClient, err := client.NewClientWithOpts(client.FromEnv)
+	apiClient, err := client.New(client.FromEnv)
 	assert.NilError(c, err)
 	defer apiClient.Close()
 
@@ -103,7 +103,6 @@ func (s *DockerAPISuite) TestInspectAPIBridgeNetworkSettings121(c *testing.T) {
 	assert.NilError(c, err)
 
 	settings := inspectJSON.NetworkSettings
-	assert.Assert(c, settings.IPAddress != "")
 	assert.Assert(c, settings.Networks["bridge"] != nil)
-	assert.Equal(c, settings.IPAddress, settings.Networks["bridge"].IPAddress)
+	assert.Assert(c, settings.Networks["bridge"].IPAddress.IsValid())
 }
