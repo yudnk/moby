@@ -1,0 +1,2 @@
+TEST_FILTER='TestContainerAPIPostContainerStop' TEST_SKIP_INTEGRATION_CLI=1 hack/make.sh dynbinary binary test-integration
+
