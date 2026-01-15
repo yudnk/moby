@@ -1,12 +1,15 @@
 package container
 
 import (
+	"net/http"
 	"testing"
 	"time"
 
+	"github.com/moby/moby/api/types/common"
 	containertypes "github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
 	"github.com/moby/moby/v2/integration/internal/container"
+	"github.com/moby/moby/v2/internal/testutil/request"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 	"gotest.tools/v3/poll"
@@ -108,6 +111,52 @@ func TestStopContainerWithTimeout(t *testing.T) {
 			inspect, err := apiClient.ContainerInspect(ctx, id, client.ContainerInspectOptions{})
 			assert.NilError(t, err)
 			assert.Check(t, is.Equal(inspect.Container.State.ExitCode, tc.expectedExitCode))
+		})
+	}
+}
+
+func TestContainerAPIPostContainerStop(t *testing.T) {
+	apiClient := testEnv.APIClient()
+	ctx := setupTest(t)
+
+	tests := []struct {
+		testName  string
+		id        string
+		expStatus int
+		expError  string
+	}{
+		{
+			testName:  "no error",
+			id:        container.Run(ctx, t, apiClient),
+			expStatus: http.StatusNoContent,
+		},
+		{
+			testName:  "container already stopped",
+			id:        container.Create(ctx, t, apiClient),
+			expStatus: http.StatusNotModified,
+		},
+		{
+			testName:  "no such container",
+			id:        "test1234",
+			expStatus: http.StatusNotFound,
+			expError:  `No such container: test1234`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.testName, func(t *testing.T) {
+			endpoint := "/containers/" + tc.id + "/stop"
+
+			res, _, err := request.Post(ctx, endpoint)
+
+			assert.Equal(t, res.StatusCode, tc.expStatus)
+			assert.NilError(t, err)
+
+			if tc.expError != "" {
+				var respErr common.ErrorResponse
+				assert.NilError(t, request.ReadJSONResponse(res, &respErr))
+				assert.ErrorContains(t, respErr, tc.expError)
+			}
 		})
 	}
 }
