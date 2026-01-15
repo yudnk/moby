@@ -103,7 +103,7 @@ func (r byCreatedDescending) Less(i, j int) bool {
 }
 
 // Containers returns the list of containers to show given the user's filtering.
-func (daemon *Daemon) Containers(ctx context.Context, config *backend.ContainerListOptions) ([]*containertypes.Summary, error) {
+func (daemon *Daemon) Containers(ctx context.Context, config *backend.ContainerListOptions) ([]containertypes.Summary, error) {
 	if err := config.Filters.Validate(acceptedPsFilterTags); err != nil {
 		return nil, err
 	}
@@ -127,20 +127,17 @@ func (daemon *Daemon) Containers(ctx context.Context, config *backend.ContainerL
 
 	// shortcut if there are no containers
 	if numContainers == 0 {
-		return []*containertypes.Summary{}, nil
+		return []containertypes.Summary{}, nil
 	}
 
 	// Get the info for each container in the list; this can be slow so we
 	// dispatch a set number of worker goroutines to do the jobs. We choose
 	// log2(numContainers) workers to avoid creating too many goroutines
 	// for large number of containers.
-	numWorkers := int(math.Log2(float64(numContainers)))
-	if numWorkers < 1 {
-		numWorkers = 1
-	}
+	numWorkers := max(int(math.Log2(float64(numContainers))), 1)
 
 	resultsMut := sync.Mutex{}
-	results := make([]*containertypes.Summary, numContainers)
+	results := make([]containertypes.Summary, numContainers)
 
 	g, ctx := errgroup.WithContext(ctx)
 	g.SetLimit(numWorkers)
@@ -174,7 +171,7 @@ func (daemon *Daemon) Containers(ctx context.Context, config *backend.ContainerL
 				// insert the result at the given index (so the output is in the
 				// same order as containerList above).
 				resultsMut.Lock()
-				results[idx] = newC
+				results[idx] = *newC
 				resultsMut.Unlock()
 
 				return nil
@@ -281,7 +278,7 @@ func (daemon *Daemon) foldFilter(ctx context.Context, view *container.View, conf
 	}
 
 	err = psFilters.WalkValues("status", func(value string) error {
-		if err := containertypes.ValidateContainerState(value); err != nil {
+		if err := containertypes.ValidateContainerState(containertypes.ContainerState(value)); err != nil {
 			return errdefs.InvalidParameter(fmt.Errorf("invalid filter 'status=%s': %w", value, err))
 		}
 		config.All = true
@@ -298,7 +295,7 @@ func (daemon *Daemon) foldFilter(ctx context.Context, view *container.View, conf
 	}
 
 	err = psFilters.WalkValues("health", func(value string) error {
-		if err := containertypes.ValidateHealthStatus(value); err != nil {
+		if err := containertypes.ValidateHealthStatus(containertypes.HealthStatus(value)); err != nil {
 			return errdefs.InvalidParameter(fmt.Errorf("invalid filter 'health=%s': %w", value, err))
 		}
 		return nil
@@ -486,12 +483,12 @@ func includeContainerInList(container *container.Snapshot, filter *listContext) 
 	}
 
 	// Do not include container if its status doesn't match the filter
-	if !filter.filters.Match("status", container.State) {
+	if !filter.filters.Match("status", string(container.State)) {
 		return excludeContainer
 	}
 
 	// Do not include container if its health doesn't match the filter
-	if !filter.filters.ExactMatch("health", container.Health) {
+	if !filter.filters.ExactMatch("health", string(container.Health)) {
 		return excludeContainer
 	}
 

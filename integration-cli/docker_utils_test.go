@@ -55,8 +55,8 @@ func getContainerCount(t *testing.T) int {
 	result := icmd.RunCommand(dockerBinary, "info")
 	result.Assert(t, icmd.Success)
 
-	lines := strings.Split(result.Combined(), "\n")
-	for _, line := range lines {
+	lines := strings.SplitSeq(result.Combined(), "\n")
+	for line := range lines {
 		if strings.Contains(line, containers) {
 			output := strings.TrimSpace(line)
 			output = strings.TrimPrefix(output, containers)
@@ -247,6 +247,7 @@ func appendBaseEnv(isTLS bool, env ...string) []string {
 // waitInspect will wait for the specified container to have the specified string
 // in the inspect output. It will wait until the specified timeout (in seconds)
 // is reached.
+//
 // Deprecated: use cli.WaitFor
 func waitInspect(name, expr, expected string, timeout time.Duration) error {
 	return daemon.WaitInspectWithArgs(dockerBinary, name, expr, expected, timeout)
@@ -254,7 +255,7 @@ func waitInspect(name, expr, expected string, timeout time.Duration) error {
 
 func getInspectBody(t *testing.T, version, id string) json.RawMessage {
 	t.Helper()
-	apiClient, err := client.New(client.FromEnv, client.WithVersion(version))
+	apiClient, err := client.New(client.FromEnv, client.WithAPIVersion(version))
 	assert.NilError(t, err)
 	defer apiClient.Close()
 	inspect, err := apiClient.ContainerInspect(testutil.GetContext(t), id, client.ContainerInspectOptions{})
@@ -435,7 +436,7 @@ func loadSpecialImage(t *testing.T, imageFunc specialimage.SpecialImageFunc) str
 
 	out := cli.DockerCmd(t, "load", "-i", imgTar).Stdout()
 
-	for _, line := range strings.Split(out, "\n") {
+	for line := range strings.SplitSeq(out, "\n") {
 		line = strings.TrimSpace(line)
 
 		if _, imageID, hasID := strings.Cut(line, "Loaded image ID: "); hasID {

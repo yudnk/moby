@@ -118,9 +118,10 @@ func getPidsLimit(config containertypes.Resources) *specs.LinuxPids {
 		// docker API allows 0 and negative values to unset this to be consistent
 		// with default values. When updating values, runc requires -1 to unset
 		// the previous limit.
-		return &specs.LinuxPids{Limit: -1}
+		val := int64(-1)
+		return &specs.LinuxPids{Limit: &val}
 	}
-	return &specs.LinuxPids{Limit: *config.PidsLimit}
+	return &specs.LinuxPids{Limit: config.PidsLimit}
 }
 
 func getCPUResources(config containertypes.Resources) (*specs.LinuxCPU, error) {
@@ -891,7 +892,7 @@ func setHostGatewayIP(controller *libnetwork.Controller, config *config.Config) 
 		v4Info, v6Info := n.IpamInfo()
 		if len(v4Info) > 0 {
 			addr, _ := netip.AddrFromSlice(v4Info[0].Gateway.IP)
-			config.HostGatewayIPs = append(config.HostGatewayIPs, addr)
+			config.HostGatewayIPs = append(config.HostGatewayIPs, addr.Unmap())
 		}
 		if len(v6Info) > 0 {
 			addr, _ := netip.AddrFromSlice(v6Info[0].Gateway.IP)
@@ -1504,12 +1505,12 @@ func getUnmountOnShutdownPath(config *config.Config) string {
 
 // registerLinks registers network links between container and other containers
 // with the daemon using the specification in hostConfig.
-func (daemon *Daemon) registerLinks(container *container.Container, hostConfig *containertypes.HostConfig) error {
-	if hostConfig == nil || hostConfig.NetworkMode.IsUserDefined() {
+func (daemon *Daemon) registerLinks(ctr *container.Container) error {
+	if ctr.HostConfig == nil || ctr.HostConfig.NetworkMode.IsUserDefined() {
 		return nil
 	}
 
-	for _, l := range hostConfig.Links {
+	for _, l := range ctr.HostConfig.Links {
 		name, alias, err := opts.ParseLink(l)
 		if err != nil {
 			return err
@@ -1542,7 +1543,7 @@ func (daemon *Daemon) registerLinks(container *container.Container, hostConfig *
 		if child.HostConfig.NetworkMode.IsHost() {
 			return cerrdefs.ErrInvalidArgument.WithMessage("conflicting options: host type networking can't be used with links. This would result in undefined behavior")
 		}
-		if err := daemon.registerLink(container, child, alias); err != nil {
+		if err := daemon.registerLink(ctr, child, alias); err != nil {
 			return err
 		}
 	}

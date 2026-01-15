@@ -24,7 +24,6 @@ import (
 
 	containerd "github.com/containerd/containerd/v2/client"
 	"github.com/containerd/containerd/v2/defaults"
-	"github.com/containerd/containerd/v2/pkg/dialer"
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/containerd/log"
 	"github.com/distribution/reference"
@@ -37,6 +36,7 @@ import (
 	networktypes "github.com/moby/moby/api/types/network"
 	registrytypes "github.com/moby/moby/api/types/registry"
 	"github.com/moby/moby/api/types/swarm"
+	"github.com/moby/moby/v2/daemon/internal/nri"
 	"github.com/moby/sys/user"
 	"github.com/moby/sys/userns"
 	"github.com/pkg/errors"
@@ -45,8 +45,6 @@ import (
 	"go.opentelemetry.io/otel"
 	"golang.org/x/sync/semaphore"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/backoff"
-	"google.golang.org/grpc/credentials/insecure"
 	"resenje.org/singleflight"
 	"tags.cncf.io/container-device-interface/pkg/cdi"
 
@@ -57,7 +55,6 @@ import (
 	ctrd "github.com/moby/moby/v2/daemon/containerd"
 	"github.com/moby/moby/v2/daemon/containerd/migration"
 	"github.com/moby/moby/v2/daemon/events"
-	"github.com/moby/moby/v2/daemon/graphdriver"
 	_ "github.com/moby/moby/v2/daemon/graphdriver/register" // register graph drivers
 	"github.com/moby/moby/v2/daemon/images"
 	"github.com/moby/moby/v2/daemon/internal/distribution"
@@ -117,6 +114,7 @@ type Daemon struct {
 	shutdown          bool
 	idMapping         user.IdentityMapping
 	PluginStore       *plugin.Store // TODO: remove
+	nri               *nri.NRI
 	pluginManager     *plugin.Manager
 	linkIndex         *linkIndex
 	containerdClient  *containerd.Client
@@ -132,9 +130,9 @@ type Daemon struct {
 	seccompProfile     []byte
 	seccompProfilePath string
 
-	usageContainers singleflight.Group[struct{}, *backend.ContainerDiskUsage]
-	usageImages     singleflight.Group[struct{}, *backend.ImageDiskUsage]
-	usageVolumes    singleflight.Group[struct{}, *backend.VolumeDiskUsage]
+	usageContainers singleflight.Group[bool, *backend.ContainerDiskUsage]
+	usageImages     singleflight.Group[bool, *backend.ImageDiskUsage]
+	usageVolumes    singleflight.Group[bool, *backend.VolumeDiskUsage]
 	usageLayer      singleflight.Group[struct{}, int64]
 
 	pruneRunning atomic.Bool
@@ -204,6 +202,11 @@ func (daemon *Daemon) Features() map[string]bool {
 // UsesSnapshotter returns true if feature flag to use containerd snapshotter is enabled
 func (daemon *Daemon) UsesSnapshotter() bool {
 	return daemon.usesSnapshotter
+}
+
+// DefaultIsolation returns the default isolation mode for the daemon to run in (only applicable on Windows).
+func (daemon *Daemon) DefaultIsolation() containertypes.Isolation {
+	return daemon.defaultIsolation
 }
 
 func (daemon *Daemon) loadContainers(ctx context.Context) (map[string]map[string]*container.Container, error) {
@@ -588,7 +591,7 @@ func (daemon *Daemon) restore(ctx context.Context, cfg *configStore, containers 
 		go func(c *container.Container) {
 			_ = sem.Acquire(context.Background(), 1)
 
-			if err := daemon.registerLinks(c, c.HostConfig); err != nil {
+			if err := daemon.registerLinks(c); err != nil {
 				log.G(ctx).WithField("container", c.ID).WithError(err).Error("failed to register link for container")
 			}
 
@@ -637,18 +640,25 @@ func (daemon *Daemon) restore(ctx context.Context, cfg *configStore, containers 
 	}
 	group.Wait()
 
-	for id := range removeContainers {
+	for id, c := range removeContainers {
 		group.Add(1)
-		go func(cid string) {
+		go func(cid string, c *container.Container) {
 			_ = sem.Acquire(context.Background(), 1)
+			defer group.Done()
+			defer sem.Release(1)
+
+			if c.State.IsDead() {
+				if err := daemon.cleanupContainer(c, backend.ContainerRmConfig{ForceRemove: true, RemoveVolume: true}); err != nil {
+					log.G(ctx).WithField("container", cid).WithError(err).Error("failed to remove dead container")
+				}
+				return
+			}
 
 			if err := daemon.containerRm(&cfg.Config, cid, &backend.ContainerRmConfig{ForceRemove: true, RemoveVolume: true}); err != nil {
 				log.G(ctx).WithField("container", cid).WithError(err).Error("failed to remove container")
 			}
 
-			sem.Release(1)
-			group.Done()
-		}(id)
+		}(id, c)
 	}
 	group.Wait()
 
@@ -796,10 +806,6 @@ func (daemon *Daemon) IsSwarmCompatible() error {
 	return daemon.config().IsSwarmCompatible()
 }
 
-func useContainerdByDefault() bool {
-	return os.Getenv("TEST_INTEGRATION_USE_GRAPHDRIVER") == "" && runtime.GOOS != "windows"
-}
-
 // NewDaemon sets up everything for the daemon to be able to service
 // requests from the webserver.
 func NewDaemon(ctx context.Context, config *config.Config, pluginStore *plugin.Store, authzMiddleware *authorization.Middleware) (_ *Daemon, retErr error) {
@@ -873,23 +879,12 @@ func NewDaemon(ctx context.Context, config *config.Config, pluginStore *plugin.S
 	}
 	d.configStore.Store(cfgStore)
 
+	imgStoreChoice, err := determineImageStoreChoice(config, determineImageStoreChoiceOptions{})
+	if err != nil {
+		return nil, err
+	}
+
 	migrationThreshold := int64(-1)
-	isGraphDriver := func(driver string) (bool, error) {
-		if driver == "" {
-			if graphdriver.HasPriorDriver(config.Root) {
-				return true, nil
-			}
-		}
-		return graphdriver.IsRegistered(driver), nil
-	}
-	if enabled, ok := config.Features["containerd-snapshotter"]; (ok && !enabled) || os.Getenv("TEST_INTEGRATION_USE_GRAPHDRIVER") != "" {
-		isGraphDriver = func(driver string) (bool, error) {
-			if driver == "" || graphdriver.IsRegistered(driver) {
-				return true, nil
-			}
-			return false, fmt.Errorf("graphdriver is explicitly enabled but %q is not registered, %v %v", driver, config.Features, os.Getenv("TEST_INTEGRATION_USE_GRAPHDRIVER"))
-		}
-	}
 	if config.Features["containerd-migration"] {
 		if ts := os.Getenv("DOCKER_MIGRATE_SNAPSHOTTER_THRESHOLD"); ts != "" {
 			v, err := units.FromHumanSize(ts)
@@ -908,9 +903,6 @@ func NewDaemon(ctx context.Context, config *config.Config, pluginStore *plugin.S
 		} else {
 			log.G(ctx).WithField("env", os.Environ()).Info("Migration to containerd is enabled, driver will be switched to snapshotter if there are no images or containers")
 		}
-	}
-	if config.Features["containerd-snapshotter"] && useContainerdByDefault() {
-		log.G(ctx).Warn(`"containerd-snapshotter" is now the default and no longer needed to be set`)
 	}
 
 	// Ensure the daemon is properly shutdown if there is a failure during
@@ -976,32 +968,7 @@ func NewDaemon(ctx context.Context, config *config.Config, pluginStore *plugin.S
 
 	const connTimeout = 60 * time.Second
 
-	// Set the max backoff delay to match our containerd.WithTimeout(),
-	// aligning with how containerd client's defaults sets this;
-	// https://github.com/containerd/containerd/blob/v2.0.2/client/client.go#L129-L136
-	backoffConfig := backoff.DefaultConfig
-	backoffConfig.MaxDelay = connTimeout
-	connParams := grpc.ConnectParams{
-		Backoff: backoffConfig,
-		// TODO: Remove after https://github.com/containerd/containerd/pull/11508
-		MinConnectTimeout: connTimeout,
-	}
 	gopts := []grpc.DialOption{
-		// ------------------------------------------------------------------
-		// options below are copied from containerd client's default options
-		//
-		// We need to set these options, because setting any custom DialOptions
-		// currently overwrites (not appends to) the defaults;
-		// https://github.com/containerd/containerd/blob/v2.0.2/client/client.go#L129-L141
-		//
-		// TODO(thaJeztah): use containerd.WithExtraDialOpts() once https://github.com/containerd/containerd/pull/11276 is merged and in a release.
-		// ------------------------------------------------------------------
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithConnectParams(connParams),
-		grpc.WithContextDialer(dialer.ContextDialer),
-		// ------------------------------------------------------------------
-		// end of options copied from containerd client's default
-		// ------------------------------------------------------------------
 		grpc.WithStatsHandler(tracing.ClientStatsHandler(otelgrpc.WithTracerProvider(otel.GetTracerProvider()))),
 		grpc.WithUnaryInterceptor(grpcerrors.UnaryClientInterceptor),
 		grpc.WithStreamInterceptor(grpcerrors.StreamClientInterceptor),
@@ -1015,7 +982,7 @@ func NewDaemon(ctx context.Context, config *config.Config, pluginStore *plugin.S
 		d.containerdClient, err = containerd.New(
 			cfgStore.ContainerdAddr,
 			containerd.WithDefaultNamespace(cfgStore.ContainerdNamespace),
-			containerd.WithDialOpts(gopts),
+			containerd.WithExtraDialOpts(gopts),
 			containerd.WithTimeout(connTimeout),
 		)
 		if err != nil {
@@ -1030,7 +997,7 @@ func NewDaemon(ctx context.Context, config *config.Config, pluginStore *plugin.S
 			pluginCli, err = containerd.New(
 				cfgStore.ContainerdAddr,
 				containerd.WithDefaultNamespace(cfgStore.ContainerdPluginNamespace),
-				containerd.WithDialOpts(gopts),
+				containerd.WithExtraDialOpts(gopts),
 				containerd.WithTimeout(connTimeout),
 			)
 			if err != nil {
@@ -1112,43 +1079,18 @@ func NewDaemon(ctx context.Context, config *config.Config, pluginStore *plugin.S
 		return nil, err
 	}
 
-	// On Windows we don't support the environment variable, or a user supplied graphdriver,
-	// but it is allowed when using snapshotters.
-	// Unix platforms however run a single graphdriver for all containers, and it can
-	// be set through an environment variable, a daemon start parameter, or chosen through
-	// initialization of the layerstore through driver priority order for example.
-	driverName := os.Getenv("DOCKER_DRIVER")
-	if isWindows {
-		if driverName == "" {
-			driverName = cfgStore.GraphDriver
-		}
-		switch driverName {
-		case "windows":
-			// Docker WCOW snapshotters
-		case "windowsfilter":
-			// Docker WCOW graphdriver
-		case "":
-			// Use graph driver unless opted-in to containerd store
-			driverName = "windowsfilter"
-			if useContainerdByDefault() || config.Features["containerd-snapshotter"] {
-				driverName = "windows"
-			}
-		default:
-			log.G(ctx).Infof("Using non-default snapshotter %s", driverName)
-
-		}
-	} else if driverName != "" {
-		log.G(ctx).Infof("Setting the storage driver from the $DOCKER_DRIVER environment variable (%s)", driverName)
-	} else {
-		driverName = cfgStore.GraphDriver
-	}
-
-	var migrationConfig migration.Config
-	tryGraphDriver, err := isGraphDriver(driverName)
+	d.nri, err = nri.NewNRI(ctx, nri.Config{
+		DaemonConfig:    config.NRIOpts,
+		ContainerLister: d.containers,
+	})
 	if err != nil {
 		return nil, err
 	}
-	if tryGraphDriver {
+
+	driverName := getDriverOverride(ctx, cfgStore.GraphDriver, imgStoreChoice)
+
+	var migrationConfig migration.Config
+	if imgStoreChoice.IsGraphDriver() {
 		layerStore, err := layer.NewStoreFromOptions(layer.StoreOptions{
 			Root:               cfgStore.Root,
 			GraphDriver:        driverName,
@@ -1284,6 +1226,9 @@ func NewDaemon(ctx context.Context, config *config.Config, pluginStore *plugin.S
 	}
 
 	if d.imageService == nil {
+		if d.containerdClient == nil {
+			return nil, errors.New("containerd snapshotter is enabled but containerd is not configured")
+		}
 		log.G(ctx).Info("Starting daemon with containerd snapshotter integration enabled")
 
 		resp, err := d.containerdClient.IntrospectionService().Plugins(ctx, `type=="io.containerd.snapshotter.v1"`)
@@ -1532,6 +1477,10 @@ func (daemon *Daemon) Shutdown(ctx context.Context) error {
 	// Shutdown plugins after containers and layerstore. Don't change the order.
 	daemon.pluginShutdown()
 
+	if daemon.nri != nil {
+		daemon.nri.Shutdown(ctx)
+	}
+
 	// trigger libnetwork Stop only if it's initialized
 	if daemon.netController != nil {
 		daemon.netController.Stop()
@@ -1543,6 +1492,14 @@ func (daemon *Daemon) Shutdown(ctx context.Context) error {
 
 	if daemon.mdDB != nil {
 		daemon.mdDB.Close()
+	}
+
+	// At this point, everything has been shut down and no containers are
+	// running anymore. If there are still some open connections to the
+	// '/events' endpoint, closing the EventsService should tear them down
+	// immediately.
+	if daemon.EventsService != nil {
+		daemon.EventsService.Close()
 	}
 
 	return daemon.cleanupMounts(cfg)

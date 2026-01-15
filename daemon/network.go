@@ -7,6 +7,7 @@ import (
 	"maps"
 	"net"
 	"net/netip"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -304,9 +305,7 @@ func (daemon *Daemon) createNetwork(ctx context.Context, cfg *config.Config, cre
 	}
 
 	networkOptions := make(map[string]string)
-	for k, v := range create.Options {
-		networkOptions[k] = v
-	}
+	maps.Copy(networkOptions, create.Options)
 	if defaultOpts, ok := cfg.DefaultNetworkOpts[driver]; create.ConfigFrom == nil && ok {
 		for k, v := range defaultOpts {
 			if _, ok := networkOptions[k]; !ok {
@@ -435,10 +434,8 @@ func (daemon *Daemon) pluginRefCount(driver, capability string, mode int) {
 		// other capabilities can be ignored for now
 	}
 
-	for _, d := range builtinDrivers {
-		if d == driver {
-			return
-		}
+	if slices.Contains(builtinDrivers, driver) {
+		return
 	}
 
 	if daemon.PluginStore != nil {
@@ -1036,7 +1033,23 @@ func buildPortsRelatedCreateEndpointOptions(c *container.Container, n *libnetwor
 		exposedPorts   []lntypes.TransportPort
 		publishedPorts []lntypes.PortBinding
 	)
-	for p, bindings := range c.HostConfig.PortBindings {
+
+	ports := c.HostConfig.PortBindings
+	if c.HostConfig.PublishAllPorts && len(c.Config.ExposedPorts) > 0 {
+		// Add exposed ports to a copy of the map to make sure a "publishedPorts" entry is created
+		// for each exposed port, even if there's no specific binding.
+		ports = maps.Clone(c.HostConfig.PortBindings)
+		if ports == nil {
+			ports = networktypes.PortMap{}
+		}
+		for p := range c.Config.ExposedPorts {
+			if _, exists := ports[p]; !exists {
+				ports[p] = nil
+			}
+		}
+	}
+
+	for p, bindings := range ports {
 		protocol := lntypes.ParseProtocol(string(p.Proto()))
 		exposedPorts = append(exposedPorts, lntypes.TransportPort{
 			Proto: protocol,
@@ -1133,8 +1146,11 @@ func getEndpointPortMapInfo(pm networktypes.PortMap, ep *libnetwork.Endpoint) {
 			if pp.HostPort > 0 {
 				hp = strconv.Itoa(int(pp.HostPort))
 			}
-			natBndg := networktypes.PortBinding{HostPort: hp}
-			natBndg.HostIP, _ = netip.AddrFromSlice(pp.HostIP)
+			hip, _ := netip.AddrFromSlice(pp.HostIP)
+			natBndg := networktypes.PortBinding{
+				HostIP:   hip.Unmap(),
+				HostPort: hp,
+			}
 			pm[natPort] = append(pm[natPort], natBndg)
 		}
 	}

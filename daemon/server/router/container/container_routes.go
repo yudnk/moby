@@ -101,23 +101,23 @@ func (c *containerRouter) getContainersJSON(ctx context.Context, w http.Response
 		return err
 	}
 
-	config := &backend.ContainerListOptions{
+	var limit int
+	if tmpLimit := r.Form.Get("limit"); tmpLimit != "" {
+		val, err := strconv.Atoi(tmpLimit)
+		if err != nil {
+			return err
+		}
+		limit = val
+	}
+
+	containers, err := c.backend.Containers(ctx, &backend.ContainerListOptions{
 		All:     httputils.BoolValue(r, "all"),
 		Size:    httputils.BoolValue(r, "size"),
 		Since:   r.Form.Get("since"),
 		Before:  r.Form.Get("before"),
+		Limit:   limit,
 		Filters: filter,
-	}
-
-	if tmpLimit := r.Form.Get("limit"); tmpLimit != "" {
-		limit, err := strconv.Atoi(tmpLimit)
-		if err != nil {
-			return err
-		}
-		config.Limit = limit
-	}
-
-	containers, err := c.backend.Containers(ctx, config)
+	})
 	if err != nil {
 		return err
 	}
@@ -125,22 +125,22 @@ func (c *containerRouter) getContainersJSON(ctx context.Context, w http.Response
 	version := httputils.VersionFromContext(ctx)
 
 	if versions.LessThan(version, "1.46") {
-		for _, c := range containers {
+		for i := range containers {
 			// Ignore HostConfig.Annotations because it was added in API v1.46.
-			c.HostConfig.Annotations = nil
+			containers[i].HostConfig.Annotations = nil
 		}
 	}
 
 	if versions.LessThan(version, "1.48") {
 		// ImageManifestDescriptor information was added in API 1.48
-		for _, c := range containers {
-			c.ImageManifestDescriptor = nil
+		for i := range containers {
+			containers[i].ImageManifestDescriptor = nil
 		}
 	}
 
 	if versions.LessThan(version, "1.52") {
-		for _, c := range containers {
-			c.Health = nil
+		for i := range containers {
+			containers[i].Health = nil
 		}
 	}
 
@@ -903,18 +903,25 @@ func handlePortBindingsBC(hostConfig *container.HostConfig, version string) stri
 		if len(bindings) > 0 {
 			continue
 		}
-		if versions.GreaterThan(version, "1.52") && len(bindings) == 0 {
-			// Starting with API 1.53, no backfilling is done. An empty slice
-			// of port bindings is treated as "no port bindings" by the daemon,
-			// but it still needs to backfill empty slices when loading the
-			// on-disk state for containers created by older versions of the
-			// Engine. Drop the PortBindings entry to ensure that no backfilling
-			// will happen when restarting the daemon.
-			delete(hostConfig.PortBindings, port)
-			continue
-		}
+		/*
+			API 1.53 shipped in a minor release. We cannot introduce a breaking change there, so
+			we must still backfill empty port bindings. This change can be re-introduced for the
+			API version that ships in 30.x. Note that some networking tests will need fixing.
+			See https://github.com/moby/moby/issues/51727
 
-		if versions.Equal(version, "1.52") {
+			if versions.GreaterThan(version, "1.52") && len(bindings) == 0 {
+				// Starting with API 1.53, no backfilling is done. An empty slice
+				// of port bindings is treated as "no port bindings" by the daemon,
+				// but it still needs to backfill empty slices when loading the
+				// on-disk state for containers created by older versions of the
+				// Engine. Drop the PortBindings entry to ensure that no backfilling
+				// will happen when restarting the daemon.
+				delete(hostConfig.PortBindings, port)
+				continue
+			}
+		*/
+
+		if versions.GreaterThanOrEqualTo(version, "1.52") {
 			emptyPBs = append(emptyPBs, port.String())
 		}
 
@@ -922,7 +929,7 @@ func handlePortBindingsBC(hostConfig *container.HostConfig, version string) stri
 	}
 
 	if len(emptyPBs) > 0 {
-		return fmt.Sprintf("Following container port(s) have an empty list of port-bindings: %s. Starting with API 1.53, such bindings will be discarded.", strings.Join(emptyPBs, ", "))
+		return fmt.Sprintf("Following container port(s) have an empty list of port-bindings: %s. Such bindings will be discarded in a future version.", strings.Join(emptyPBs, ", "))
 	}
 
 	return ""
@@ -1160,7 +1167,7 @@ func (c *containerRouter) postContainersPrune(ctx context.Context, w http.Respon
 		return err
 	}
 
-	pruneReport, err := c.backend.ContainersPrune(ctx, pruneFilters)
+	pruneReport, err := c.backend.ContainerPrune(ctx, pruneFilters)
 	if err != nil {
 		return err
 	}

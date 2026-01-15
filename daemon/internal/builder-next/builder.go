@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
 	"net/netip"
 	"strconv"
 	"strings"
@@ -40,6 +41,7 @@ import (
 	"google.golang.org/grpc"
 	grpcmetadata "google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/proto"
+	"resenje.org/singleflight"
 	"tags.cncf.io/container-device-interface/pkg/cdi"
 )
 
@@ -97,6 +99,7 @@ type Opt struct {
 	Snapshotter         string
 	ContainerdAddress   string
 	ContainerdNamespace string
+	HyperVIsolation     bool
 	Callbacks           exporter.BuildkitCallbacks
 	CDICache            *cdi.Cache
 }
@@ -106,6 +109,7 @@ type Builder struct {
 	controller     *control.Controller
 	dnsconfig      config.DNSConfig
 	reqBodyHandler *reqBodyHandler
+	diskUsage      singleflight.Group[buildbackend.DiskUsageOptions, *buildbackend.DiskUsage]
 
 	mu             sync.Mutex
 	jobs           map[string]*buildJob
@@ -150,39 +154,53 @@ func (b *Builder) Cancel(ctx context.Context, id string) error {
 }
 
 // DiskUsage returns a report about space used by build cache
-func (b *Builder) DiskUsage(ctx context.Context) ([]*build.CacheRecord, error) {
-	duResp, err := b.controller.DiskUsage(ctx, &controlapi.DiskUsageRequest{})
-	if err != nil {
-		return nil, err
-	}
+func (b *Builder) DiskUsage(ctx context.Context, options buildbackend.DiskUsageOptions) (*buildbackend.DiskUsage, error) {
+	res, _, err := b.diskUsage.Do(ctx, options, func(ctx context.Context) (*buildbackend.DiskUsage, error) {
+		duResp, err := b.controller.DiskUsage(ctx, &controlapi.DiskUsageRequest{})
+		if err != nil {
+			return nil, fmt.Errorf("error getting build cache usage: %w", err)
+		}
 
-	var items []*build.CacheRecord
-	for _, r := range duResp.Record {
-		items = append(items, &build.CacheRecord{
-			ID:          r.ID,
-			Parents:     r.Parents,
-			Type:        r.RecordType,
-			Description: r.Description,
-			InUse:       r.InUse,
-			Shared:      r.Shared,
-			Size:        r.Size,
-			CreatedAt: func() time.Time {
-				if r.CreatedAt != nil {
-					return r.CreatedAt.AsTime()
-				}
-				return time.Time{}
-			}(),
-			LastUsedAt: func() *time.Time {
-				if r.LastUsedAt == nil {
-					return nil
-				}
-				t := r.LastUsedAt.AsTime()
-				return &t
-			}(),
-			UsageCount: int(r.UsageCount),
-		})
-	}
-	return items, nil
+		var usage buildbackend.DiskUsage
+		for _, r := range duResp.Record {
+			usage.TotalCount++
+			usage.TotalSize += r.Size
+			if r.InUse {
+				usage.ActiveCount++
+			}
+			if !r.InUse && !r.Shared {
+				usage.Reclaimable += r.Size
+			}
+			if !options.Verbose {
+				continue
+			}
+			usage.Items = append(usage.Items, build.CacheRecord{
+				ID:          r.ID,
+				Parents:     r.Parents,
+				Type:        r.RecordType,
+				Description: r.Description,
+				InUse:       r.InUse,
+				Shared:      r.Shared,
+				Size:        r.Size,
+				CreatedAt: func() time.Time {
+					if r.CreatedAt != nil {
+						return r.CreatedAt.AsTime()
+					}
+					return time.Time{}
+				}(),
+				LastUsedAt: func() *time.Time {
+					if r.LastUsedAt == nil {
+						return nil
+					}
+					t := r.LastUsedAt.AsTime()
+					return &t
+				}(),
+				UsageCount: int(r.UsageCount),
+			})
+		}
+		return &usage, nil
+	})
+	return res, err
 }
 
 // Prune clears all reclaimable build cache.
@@ -196,9 +214,7 @@ func (b *Builder) Prune(ctx context.Context, opts buildbackend.CachePruneOptions
 	validFilters["until"] = true
 	validFilters["label"] = true  // TODO(tiborvass): handle label
 	validFilters["label!"] = true // TODO(tiborvass): handle label!
-	for k, v := range cacheFields {
-		validFilters[k] = v
-	}
+	maps.Copy(validFilters, cacheFields)
 	if err := opts.Filters.Validate(validFilters); err != nil {
 		return 0, nil, err
 	}

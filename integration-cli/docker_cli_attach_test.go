@@ -54,7 +54,7 @@ func (s *DockerCLIAttachSuite) TestAttachMultipleAndRestart(c *testing.T) {
 		close(startDone)
 	}()
 
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		go func() {
 			cmd := exec.Command(dockerBinary, "attach", "attacher")
 
@@ -195,6 +195,6 @@ func (s *DockerCLIAttachSuite) TestAttachPausedContainer(c *testing.T) {
 	result.Assert(c, icmd.Expected{
 		Error:    "exit status 1",
 		ExitCode: 1,
-		Err:      "You cannot attach to a paused container, unpause it first",
+		Err:      "cannot attach to a paused container",
 	})
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"runtime"
 	"time"
 
@@ -35,9 +36,7 @@ func (daemon *Daemon) ContainerInspect(ctx context.Context, name string, options
 
 	// TODO(thaJeztah): do we need a deep copy here? Otherwise we could use maps.Clone (see https://github.com/moby/moby/commit/7917a36cc787ada58987320e67cc6d96858f3b55)
 	ports := make(networktypes.PortMap, len(ctr.NetworkSettings.Ports))
-	for k, pm := range ctr.NetworkSettings.Ports {
-		ports[k] = pm
-	}
+	maps.Copy(ports, ctr.NetworkSettings.Ports)
 
 	apiNetworks := make(map[string]*networktypes.EndpointSettings)
 	for nwName, epConf := range ctr.NetworkSettings.Networks {
@@ -125,7 +124,7 @@ func (daemon *Daemon) getInspectData(daemonCfg *config.Config, ctr *container.Co
 		Path:    ctr.Path,
 		Args:    ctr.Args,
 		State: &containertypes.State{
-			Status:     ctr.State.StateString(),
+			Status:     ctr.State.State(),
 			Running:    ctr.State.Running,
 			Paused:     ctr.State.Paused,
 			Restarting: ctr.State.Restarting,

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"net/url"
 
-	"github.com/containerd/errdefs"
+	cerrdefs "github.com/containerd/errdefs"
 	"github.com/moby/moby/api/types/volume"
 )
 
@@ -20,16 +20,16 @@ type VolumePruneOptions struct {
 	Filters Filters
 }
 
-// VolumePruneResult holds the result from the [Client.VolumesPrune] method.
+// VolumePruneResult holds the result from the [Client.VolumePrune] method.
 type VolumePruneResult struct {
 	Report volume.PruneReport
 }
 
-// VolumesPrune requests the daemon to delete unused data
-func (cli *Client) VolumesPrune(ctx context.Context, options VolumePruneOptions) (VolumePruneResult, error) {
+// VolumePrune requests the daemon to delete unused data
+func (cli *Client) VolumePrune(ctx context.Context, options VolumePruneOptions) (VolumePruneResult, error) {
 	if options.All {
 		if _, ok := options.Filters["all"]; ok {
-			return VolumePruneResult{}, errdefs.ErrInvalidArgument.WithMessage(`conflicting options: cannot specify both "all" and "all" filter`)
+			return VolumePruneResult{}, cerrdefs.ErrInvalidArgument.WithMessage(`conflicting options: cannot specify both "all" and "all" filter`)
 		}
 		if options.Filters == nil {
 			options.Filters = Filters{}

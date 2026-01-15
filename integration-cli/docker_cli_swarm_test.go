@@ -1100,9 +1100,9 @@ func (s *DockerSwarmSuite) TestUnlockEngineAndUnlockedSwarm(c *testing.T) {
 	result.Assert(c, icmd.Expected{
 		ExitCode: 1,
 	})
-	out := result.Combined()
-	assert.Assert(c, strings.Contains(result.Combined(), "Error: This node is not part of a swarm"), out)
-	assert.Assert(c, !strings.Contains(result.Combined(), "Please enter unlock key"), out)
+	out := strings.ToLower(result.Combined())
+	assert.Assert(c, strings.Contains(out, "this node is not part of a swarm"), out)
+	assert.Assert(c, !strings.Contains(out, "enter unlock key"), out)
 	out, err := d.Cmd("swarm", "init")
 	assert.NilError(c, err, out)
 
@@ -1112,9 +1112,9 @@ func (s *DockerSwarmSuite) TestUnlockEngineAndUnlockedSwarm(c *testing.T) {
 	result.Assert(c, icmd.Expected{
 		ExitCode: 1,
 	})
-	out = result.Combined()
-	assert.Assert(c, strings.Contains(result.Combined(), "Error: swarm is not locked"), out)
-	assert.Assert(c, !strings.Contains(result.Combined(), "Please enter unlock key"), out)
+	out = strings.ToLower(result.Combined())
+	assert.Assert(c, strings.Contains(out, "swarm is not locked"), out)
+	assert.Assert(c, !strings.Contains(out, "enter unlock key"), out)
 }
 
 func (s *DockerSwarmSuite) TestSwarmInitLocked(c *testing.T) {
@@ -1148,7 +1148,7 @@ func (s *DockerSwarmSuite) TestSwarmInitLocked(c *testing.T) {
 
 	outs, err = d.Cmd("node", "ls")
 	assert.Assert(c, err == nil, outs)
-	assert.Assert(c, !strings.Contains(outs, "Swarm is encrypted and needs to be unlocked"), outs)
+	assert.Assert(c, !strings.Contains(outs, "encrypted and needs to be unlocked"), outs)
 	outs, err = d.Cmd("swarm", "update", "--autolock=false")
 	assert.Assert(c, err == nil, outs)
 
@@ -1156,7 +1156,7 @@ func (s *DockerSwarmSuite) TestSwarmInitLocked(c *testing.T) {
 
 	outs, err = d.Cmd("node", "ls")
 	assert.Assert(c, err == nil, outs)
-	assert.Assert(c, !strings.Contains(outs, "Swarm is encrypted and needs to be unlocked"), outs)
+	assert.Assert(c, !strings.Contains(outs, "encrypted and needs to be unlocked"), outs)
 }
 
 func (s *DockerSwarmSuite) TestSwarmLeaveLocked(c *testing.T) {
@@ -1173,10 +1173,10 @@ func (s *DockerSwarmSuite) TestSwarmLeaveLocked(c *testing.T) {
 	assert.Equal(c, info.LocalNodeState, swarm.LocalNodeStateLocked)
 
 	outs, _ = d.Cmd("node", "ls")
-	assert.Assert(c, strings.Contains(outs, "Swarm is encrypted and needs to be unlocked"), outs)
+	assert.Assert(c, strings.Contains(outs, "encrypted and needs to be unlocked"), outs)
 	// `docker swarm leave` a locked swarm without --force will return an error
 	outs, _ = d.Cmd("swarm", "leave")
-	assert.Assert(c, strings.Contains(outs, "Swarm is encrypted and locked."), outs)
+	assert.Assert(c, strings.Contains(outs, "encrypted and locked."), outs)
 	// It is OK for user to leave a locked swarm with --force
 	outs, err = d.Cmd("swarm", "leave", "--force")
 	assert.Assert(c, err == nil, outs)
@@ -1311,7 +1311,7 @@ func (s *DockerSwarmSuite) TestSwarmJoinPromoteLocked(c *testing.T) {
 	poll.WaitOn(c, pollCheck(c, d3.CheckLocalNodeState(ctx), checker.Equals(swarm.LocalNodeStateActive)), poll.WithTimeout(time.Second))
 }
 
-const swarmIsEncryptedMsg = "Swarm is encrypted and needs to be unlocked"
+const swarmIsEncryptedMsg = "encrypted and needs to be unlocked"
 
 func (s *DockerSwarmSuite) TestSwarmRotateUnlockKey(c *testing.T) {
 	ctx := testutil.GetContext(c)
@@ -1486,7 +1486,7 @@ func (s *DockerSwarmSuite) TestSwarmAlternateLockUnlock(c *testing.T) {
 	ctx := testutil.GetContext(c)
 	d := s.AddDaemon(ctx, c, true, true)
 
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		// set to lock
 		outs, err := d.Cmd("swarm", "update", "--autolock")
 		assert.Assert(c, err == nil, "out: %v", outs)
@@ -1790,7 +1790,7 @@ func (s *DockerSwarmSuite) TestSwarmJoinLeave(c *testing.T) {
 
 	// Verify that back to back join/leave does not cause panics
 	d1 := s.AddDaemon(ctx, c, false, false)
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		out, err = d1.Cmd("swarm", "join", "--token", token, d.SwarmListenAddr())
 		assert.NilError(c, err)
 		assert.Assert(c, strings.TrimSpace(out) != "")
@@ -1808,7 +1808,7 @@ func waitForEvent(t *testing.T, d *daemon.Daemon, since string, filter string, e
 		return ""
 	}
 	var out string
-	for i := 0; i < retry; i++ {
+	for i := range retry {
 		until := daemonUnixTime(t)
 		var err error
 		if filter != "" {

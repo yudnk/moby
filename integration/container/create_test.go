@@ -734,7 +734,7 @@ func TestCreateWithMultipleEndpointSettings(t *testing.T) {
 
 	for _, tc := range testcases {
 		t.Run("with API v"+tc.apiVersion, func(t *testing.T) {
-			apiClient, err := client.New(client.FromEnv, client.WithVersion(tc.apiVersion))
+			apiClient, err := client.New(client.FromEnv, client.WithAPIVersion(tc.apiVersion))
 			assert.NilError(t, err)
 
 			config := container.Config{
@@ -768,7 +768,7 @@ func TestCreateWithCustomMACs(t *testing.T) {
 
 	net.CreateNoError(ctx, t, apiClient, "testnet")
 
-	attachCtx, cancel := context.WithTimeout(ctx, 1*time.Second)
+	attachCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	res := testContainer.RunAttach(attachCtx, t, apiClient,
 		testContainer.WithCmd("ip", "-o", "link", "show"),

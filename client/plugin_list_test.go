@@ -1,7 +1,6 @@
 package client
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"testing"
@@ -16,7 +15,7 @@ func TestPluginListError(t *testing.T) {
 	client, err := New(WithMockClient(errorMock(http.StatusInternalServerError, "Server error")))
 	assert.NilError(t, err)
 
-	_, err = client.PluginList(context.Background(), PluginListOptions{})
+	_, err = client.PluginList(t.Context(), PluginListOptions{})
 	assert.Check(t, is.ErrorType(err, cerrdefs.IsInternal))
 }
 
@@ -64,14 +63,14 @@ func TestPluginList(t *testing.T) {
 					return nil, fmt.Errorf("%s not set in URL query properly. Expected '%s', got %s", key, expected, actual)
 				}
 			}
-			return mockJSONResponse(http.StatusOK, nil, []*plugin.Plugin{
+			return mockJSONResponse(http.StatusOK, nil, []plugin.Plugin{
 				{ID: "plugin_id1"},
 				{ID: "plugin_id2"},
 			})(req)
 		}))
 		assert.NilError(t, err)
 
-		list, err := client.PluginList(context.Background(), PluginListOptions{
+		list, err := client.PluginList(t.Context(), PluginListOptions{
 			Filters: listCase.filters,
 		})
 		assert.NilError(t, err)

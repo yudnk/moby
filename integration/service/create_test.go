@@ -121,7 +121,7 @@ func TestCreateServiceMultipleTimes(t *testing.T) {
 	// a few times, to give tasks time to be deallocated
 	poll.WaitOn(t, swarm.NoTasksForService(ctx, apiClient, serviceID2), swarm.ServicePoll)
 
-	for retry := 0; retry < 5; retry++ {
+	for range 5 {
 		_, err = apiClient.NetworkRemove(ctx, overlayID, client.NetworkRemoveOptions{})
 		// TODO(dperny): using strings.Contains for error checking is awful,
 		// but so is the fact that swarm functions don't return errdefs errors.
@@ -232,14 +232,14 @@ func TestCreateServiceSecretFileMode(t *testing.T) {
 
 	poll.WaitOn(t, swarm.RunningTasksCount(ctx, apiClient, serviceID, instances), swarm.ServicePoll)
 
-	body, err := apiClient.ServiceLogs(ctx, serviceID, client.ServiceLogsOptions{
+	res, err := apiClient.ServiceLogs(ctx, serviceID, client.ServiceLogsOptions{
 		Tail:       "1",
 		ShowStdout: true,
 	})
 	assert.NilError(t, err)
-	defer body.Close()
+	defer func() { _ = res.Close() }()
 
-	content, err := io.ReadAll(body)
+	content, err := io.ReadAll(res)
 	assert.NilError(t, err)
 	assert.Check(t, is.Contains(string(content), "-rwxrwxrwx"))
 
@@ -291,14 +291,14 @@ func TestCreateServiceConfigFileMode(t *testing.T) {
 
 	poll.WaitOn(t, swarm.RunningTasksCount(ctx, apiClient, serviceID, instances))
 
-	body, err := apiClient.ServiceLogs(ctx, serviceID, client.ServiceLogsOptions{
+	res, err := apiClient.ServiceLogs(ctx, serviceID, client.ServiceLogsOptions{
 		Tail:       "1",
 		ShowStdout: true,
 	})
 	assert.NilError(t, err)
-	defer body.Close()
+	defer func() { _ = res.Close() }()
 
-	content, err := io.ReadAll(body)
+	content, err := io.ReadAll(res)
 	assert.NilError(t, err)
 	assert.Check(t, is.Contains(string(content), "-rwxrwxrwx"))
 

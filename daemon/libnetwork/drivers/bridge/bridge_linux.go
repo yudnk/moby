@@ -1796,10 +1796,12 @@ func (d *driver) link(network *bridgeNetwork, endpoint *bridgeEndpoint, enable b
 			if !ok {
 				return fmt.Errorf("invalid parent endpoint IP: %s", parentEndpoint.addr.IP)
 			}
+			parentAddr = parentAddr.Unmap()
 			childAddr, ok := netip.AddrFromSlice(endpoint.addr.IP)
 			if !ok {
 				return fmt.Errorf("invalid parent endpoint IP: %s", endpoint.addr.IP)
 			}
+			childAddr = childAddr.Unmap()
 
 			if enable {
 				if err := network.firewallerNetwork.AddLink(context.TODO(), parentAddr, childAddr, ec.ExposedPorts); err != nil {
@@ -1826,10 +1828,12 @@ func (d *driver) link(network *bridgeNetwork, endpoint *bridgeEndpoint, enable b
 		if !ok {
 			return fmt.Errorf("invalid parent endpoint IP: %s", endpoint.addr.IP)
 		}
+		parentAddr = parentAddr.Unmap()
 		childAddr, ok := netip.AddrFromSlice(childEndpoint.addr.IP)
 		if !ok {
 			return fmt.Errorf("invalid parent endpoint IP: %s", childEndpoint.addr.IP)
 		}
+		childAddr = childAddr.Unmap()
 
 		if enable {
 			if err := network.firewallerNetwork.AddLink(context.TODO(), parentAddr, childAddr, childEndpoint.extConnConfig.ExposedPorts); err != nil {
@@ -1861,11 +1865,7 @@ func parseContainerOptions(cOptions map[string]any) (*containerConfiguration, er
 	}
 	switch opt := genericData.(type) {
 	case options.Generic:
-		opaqueConfig, err := options.GenerateFromModel(opt, &containerConfiguration{})
-		if err != nil {
-			return nil, err
-		}
-		return opaqueConfig.(*containerConfiguration), nil
+		return options.GenerateFromModel[*containerConfiguration](opt)
 	case *containerConfiguration:
 		return opt, nil
 	default:

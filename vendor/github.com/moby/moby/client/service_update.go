@@ -28,7 +28,7 @@ type ServiceUpdateOptions struct {
 	// RegistryAuthFrom specifies where to find the registry authorization
 	// credentials if they are not given in EncodedRegistryAuth. Valid
 	// values are "spec" and "previous-spec".
-	RegistryAuthFrom string
+	RegistryAuthFrom swarm.RegistryAuthSource
 
 	// Rollback indicates whether a server-side rollback should be
 	// performed. When this is set, the provided spec will be ignored.
@@ -65,7 +65,7 @@ func (cli *Client) ServiceUpdate(ctx context.Context, serviceID string, options 
 
 	query := url.Values{}
 	if options.RegistryAuthFrom != "" {
-		query.Set("registryAuthFrom", options.RegistryAuthFrom)
+		query.Set("registryAuthFrom", string(options.RegistryAuthFrom))
 	}
 
 	if options.Rollback != "" {
@@ -82,16 +82,18 @@ func (cli *Client) ServiceUpdate(ctx context.Context, serviceID string, options 
 			options.Spec.TaskTemplate.ContainerSpec.Image = taggedImg
 		}
 		if options.QueryRegistry {
-			resolveWarning := resolveContainerSpecImage(ctx, cli, &options.Spec.TaskTemplate, options.EncodedRegistryAuth)
-			warnings = append(warnings, resolveWarning)
+			if warning := resolveContainerSpecImage(ctx, cli, &options.Spec.TaskTemplate, options.EncodedRegistryAuth); warning != "" {
+				warnings = append(warnings, warning)
+			}
 		}
 	case options.Spec.TaskTemplate.PluginSpec != nil:
 		if taggedImg := imageWithTagString(options.Spec.TaskTemplate.PluginSpec.Remote); taggedImg != "" {
 			options.Spec.TaskTemplate.PluginSpec.Remote = taggedImg
 		}
 		if options.QueryRegistry {
-			resolveWarning := resolvePluginSpecRemote(ctx, cli, &options.Spec.TaskTemplate, options.EncodedRegistryAuth)
-			warnings = append(warnings, resolveWarning)
+			if warning := resolvePluginSpecRemote(ctx, cli, &options.Spec.TaskTemplate, options.EncodedRegistryAuth); warning != "" {
+				warnings = append(warnings, warning)
+			}
 		}
 	}
 

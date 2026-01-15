@@ -48,7 +48,10 @@ func (e *imageExporterMobyWrapper) Resolve(ctx context.Context, id int, exporter
 		return nil, err
 	}
 	exporterAttrs[string(exptypes.OptKeyName)] = strings.Join(reposAndTags, ",")
-	exporterAttrs[string(exptypes.OptKeyUnpack)] = "true"
+
+	if _, has := exporterAttrs[string(exptypes.OptKeyUnpack)]; !has {
+		exporterAttrs[string(exptypes.OptKeyUnpack)] = "true"
+	}
 	if _, has := exporterAttrs[string(exptypes.OptKeyDanglingPrefix)]; !has {
 		exporterAttrs[string(exptypes.OptKeyDanglingPrefix)] = "moby-dangling"
 	}
@@ -70,8 +73,8 @@ type imageExporterInstanceWrapper struct {
 	callbacks BuildkitCallbacks
 }
 
-func (i *imageExporterInstanceWrapper) Export(ctx context.Context, src *exporter.Source, inlineCache exptypes.InlineCache, sessionID string) (map[string]string, exporter.DescriptorReference, error) {
-	out, ref, err := i.ExporterInstance.Export(ctx, src, inlineCache, sessionID)
+func (i *imageExporterInstanceWrapper) Export(ctx context.Context, src *exporter.Source, buildInfo exporter.ExportBuildInfo) (map[string]string, exporter.DescriptorReference, error) {
+	out, ref, err := i.ExporterInstance.Export(ctx, src, buildInfo)
 	if err != nil {
 		return out, ref, err
 	}
@@ -97,7 +100,7 @@ func (i *imageExporterInstanceWrapper) processNamedCallback(ctx context.Context,
 		return
 	}
 
-	for _, name := range strings.Split(imageName, ",") {
+	for name := range strings.SplitSeq(imageName, ",") {
 		ref, err := reference.ParseNormalizedNamed(name)
 		if err != nil {
 			// Shouldn't happen, but log if it does and continue.

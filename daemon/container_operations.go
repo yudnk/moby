@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/netip"
 	"os"
 	"runtime"
@@ -413,9 +414,7 @@ func (daemon *Daemon) allocateNetwork(ctx context.Context, cfg *config.Config, c
 
 	// An intermediate map is necessary because "connectToNetwork" modifies "container.NetworkSettings.Networks"
 	networks := make(map[string]*network.EndpointSettings)
-	for n, epConf := range ctr.NetworkSettings.Networks {
-		networks[n] = epConf
-	}
+	maps.Copy(networks, ctr.NetworkSettings.Networks)
 	for netName, epConf := range networks {
 		cleanOperationalData(epConf)
 		if err := daemon.connectToNetwork(ctx, cfg, ctr, netName, epConf); err != nil {
@@ -540,12 +539,12 @@ func validateEndpointSettings(nw *libnetwork.Network, nwName string, epConfig *n
 	errs = normalizeEndpointIPAMConfig(errs, ipamConfig)
 
 	if nw != nil {
-		_, _, v4Configs, v6Configs := nw.IpamConfig()
-		errs = validateIPAMConfigIsInRange(errs, ipamConfig, v4Configs, v6Configs)
+		v4Info, v6Info := nw.IpamInfo()
+		errs = validateIPAMConfigIsInRange(errs, ipamConfig, v4Info, v6Info)
 	}
 
 	if sysctls, ok := epConfig.DriverOpts[netlabel.EndpointSysctls]; ok {
-		for _, sysctl := range strings.Split(sysctls, ",") {
+		for sysctl := range strings.SplitSeq(sysctls, ",") {
 			scname := strings.SplitN(sysctl, ".", 5)
 			// Allow "ifname" as well as "IFNAME", because the CLI converts to lower case.
 			if len(scname) != 5 ||
@@ -598,36 +597,28 @@ func normalizeEndpointIPAMConfig(errs []error, cfg *networktypes.EndpointIPAMCon
 }
 
 // validateIPAMConfigIsInRange checks whether static IP addresses are valid in a specific network.
-func validateIPAMConfigIsInRange(errs []error, cfg *networktypes.EndpointIPAMConfig, v4Subnets, v6Subnets []*libnetwork.IpamConf) []error {
-	if err := validateEndpointIPAddress(cfg.IPv4Address, v4Subnets); err != nil {
+func validateIPAMConfigIsInRange(errs []error, cfg *networktypes.EndpointIPAMConfig, v4Info, v6Info []*libnetwork.IpamInfo) []error {
+	if err := validateEndpointIPAddress(cfg.IPv4Address, v4Info); err != nil {
 		errs = append(errs, err)
 	}
-	if err := validateEndpointIPAddress(cfg.IPv6Address, v6Subnets); err != nil {
+	if err := validateEndpointIPAddress(cfg.IPv6Address, v6Info); err != nil {
 		errs = append(errs, err)
 	}
 	return errs
 }
 
-func validateEndpointIPAddress(epAddr netip.Addr, ipamSubnets []*libnetwork.IpamConf) error {
+func validateEndpointIPAddress(epAddr netip.Addr, ipamInfo []*libnetwork.IpamInfo) error {
 	if !epAddr.IsValid() {
 		return nil
 	}
 
-	var staticSubnet bool
-	for _, subnet := range ipamSubnets {
-		if subnet.IsStatic() {
-			staticSubnet = true
-			if subnet.Contains(epAddr) {
-				return nil
-			}
+	for _, subnet := range ipamInfo {
+		if subnet.Pool.Contains(epAddr.AsSlice()) {
+			return nil
 		}
 	}
 
-	if staticSubnet {
-		return fmt.Errorf("no configured subnet or ip-range contain the IP address %s", epAddr)
-	}
-
-	return errors.New("user specified IP address is supported only when connecting to networks with user configured subnets")
+	return fmt.Errorf("no configured subnet contains IP address %s", epAddr)
 }
 
 // cleanOperationalData resets the operational data from the passed endpoint settings
@@ -968,7 +959,7 @@ func (daemon *Daemon) getNetworkedContainer(containerID, connectedContainerPrefi
 		return nil, errdefs.System(errdefs.InvalidParameter(errors.New("cannot join own network namespace")))
 	}
 	if !nc.State.IsRunning() {
-		return nil, errdefs.Conflict(fmt.Errorf("cannot join network namespace of a non running container: container %s is %s", strings.TrimPrefix(nc.Name, "/"), nc.State.StateString()))
+		return nil, errdefs.Conflict(fmt.Errorf("cannot join network namespace of a non running container: container %s is %s", strings.TrimPrefix(nc.Name, "/"), nc.State.State()))
 	}
 	if nc.State.IsRestarting() {
 		return nil, fmt.Errorf("cannot join network namespace of container: %w", errContainerIsRestarting(connectedContainerPrefixOrName))

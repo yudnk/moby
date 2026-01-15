@@ -1123,7 +1123,7 @@ func (s *DockerNetworkSuite) TestDockerNetworkHostModeUngracefulDaemonRestart(c 
 	s.d.StartWithBusybox(ctx, c)
 
 	// Run a few containers on host network
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		cName := fmt.Sprintf("hostc-%d", i)
 		out, err := s.d.Cmd("run", "-d", "--name", cName, "--net=host", "--restart=always", "busybox", "top")
 		assert.NilError(c, err, out)
@@ -1138,7 +1138,7 @@ func (s *DockerNetworkSuite) TestDockerNetworkHostModeUngracefulDaemonRestart(c 
 	s.d.Start(c)
 
 	// make sure all the containers are up and running
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		err := s.d.WaitRun(fmt.Sprintf("hostc-%d", i))
 		assert.NilError(c, err)
 	}
@@ -1357,10 +1357,10 @@ func (s *DockerNetworkSuite) TestDockerNetworkUnsupportedRequiredIP(c *testing.T
 
 	out, _, err := dockerCmdWithError("run", "-d", "--ip", "172.28.99.88", "--net", "n0", "busybox", "top")
 	assert.Assert(c, err != nil, "out: %s", out)
-	assert.Assert(c, is.Contains(out, "user specified IP address is supported only when connecting to networks with user configured subnets"))
+	assert.Assert(c, is.Contains(out, "no configured subnet contains IP address 172.28.99.88"))
 	out, _, err = dockerCmdWithError("run", "-d", "--ip6", "2001:db8:1234::9988", "--net", "n0", "busybox", "top")
 	assert.Assert(c, err != nil, "out: %s", out)
-	assert.Assert(c, is.Contains(out, "user specified IP address is supported only when connecting to networks with user configured subnets"))
+	assert.Assert(c, is.Contains(out, "no configured subnet contains IP address 2001:db8:1234::9988"))
 	cli.DockerCmd(c, "network", "rm", "n0")
 	assertNwNotAvailable(c, "n0")
 }
@@ -1739,9 +1739,9 @@ func (s *DockerNetworkSuite) TestDockerNetworkValidateIP(c *testing.T) {
 	verifyIPAddresses(c, "mynet0", "mynet", "172.28.99.88", "2001:db8:1234::9988")
 
 	_, _, err = dockerCmdWithError("run", "--net=mynet", "--ip", "mynet_ip", "--ip6", "2001:db8:1234::9999", "busybox", "top")
-	assert.ErrorContains(c, err, "unable to parse IP")
+	assert.ErrorContains(c, err, "parse IP") // failed to / unable to parse IP
 	_, _, err = dockerCmdWithError("run", "--net=mynet", "--ip", "172.28.99.99", "--ip6", "mynet_ip6", "busybox", "top")
-	assert.ErrorContains(c, err, "unable to parse IP")
+	assert.ErrorContains(c, err, "parse IP") // failed to / unable to parse IP
 
 	// This is a case of IPv4 address to `--ip6`
 	_, _, err = dockerCmdWithError("run", "--net=mynet", "--ip6", "172.28.99.99", "busybox", "top")

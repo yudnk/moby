@@ -15,7 +15,7 @@ import (
 
 var honorXDG bool
 
-func newDaemonCommand(stderr io.Writer) (*cobra.Command, error) {
+func newDaemonCommand() (*cobra.Command, error) {
 	// FIXME(thaJeztah): config.New also looks up default binary-path, but this code is also executed when running "--version".
 	cfg, err := config.New()
 	if err != nil {
@@ -38,7 +38,10 @@ func newDaemonCommand(stderr io.Writer) (*cobra.Command, error) {
 			}
 			if opts.Validate {
 				// If config wasn't OK we wouldn't have made it this far.
-				_, _ = fmt.Fprintln(stderr, "configuration OK")
+				//
+				// We print this message on STDERR, not STDOUT, to align
+				// with other tools, such as "nginx -t" or "sshd -t".
+				cmd.PrintErrln("configuration OK")
 				return nil
 			}
 
@@ -52,23 +55,6 @@ func newDaemonCommand(stderr io.Writer) (*cobra.Command, error) {
 			DisableDescriptions: false,
 		},
 	}
-
-	// Cobra's [Command.InitDefaultCompletionCmd] has a special-case for
-	// binaries/commands that don't have subcommands, and does not set up
-	// the default completion command in that case.
-	//
-	// Unfortunately, the definition of the default completion commands
-	// is not exported, and we don't want to replicate them. As a workaround,
-	// we're adding a hidden dummy-command to trick Cobra into applying
-	// the default.
-	//
-	// TODO(thaJeztah): consider contributing to Cobra to either allow explicitly enabling, or to export the default completion commands
-	//
-	// [Command.InitDefaultCompletionCmd]: https://github.com/spf13/cobra/blob/v1.8.1/completions.go#L685-L698
-	cmd.AddCommand(&cobra.Command{
-		Use:    "__dummy_command",
-		Hidden: true,
-	})
 
 	SetupRootCommand(cmd)
 
@@ -121,11 +107,12 @@ func NewDaemonRunner(stdout, stderr io.Writer) (Runner, error) {
 
 	initLogging(stdout, stderr)
 
-	cmd, err := newDaemonCommand(stderr)
+	cmd, err := newDaemonCommand()
 	if err != nil {
 		return nil, err
 	}
 	cmd.SetOut(stdout)
+	cmd.SetErr(stderr)
 
 	return daemonRunner{cmd}, nil
 }

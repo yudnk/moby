@@ -15,7 +15,7 @@ import (
 // containerDiskUsage obtains information about container data disk usage
 // and makes sure that only one calculation is performed at the same time.
 func (daemon *Daemon) containerDiskUsage(ctx context.Context, verbose bool) (*backend.ContainerDiskUsage, error) {
-	res, _, err := daemon.usageContainers.Do(ctx, struct{}{}, func(ctx context.Context) (*backend.ContainerDiskUsage, error) {
+	res, _, err := daemon.usageContainers.Do(ctx, verbose, func(ctx context.Context) (*backend.ContainerDiskUsage, error) {
 		// Retrieve container list
 		containers, err := daemon.Containers(ctx, &backend.ContainerListOptions{
 			Size: true,
@@ -25,30 +25,24 @@ func (daemon *Daemon) containerDiskUsage(ctx context.Context, verbose bool) (*ba
 			return nil, fmt.Errorf("failed to retrieve container list: %v", err)
 		}
 
-		// Remove image manifest descriptor from the result as it should not be included.
-		// https://github.com/moby/moby/pull/49407#discussion_r1954396666
-		for _, c := range containers {
-			c.ImageManifestDescriptor = nil
+		du := &backend.ContainerDiskUsage{
+			ActiveCount: int64(len(containers)),
+			TotalCount:  int64(len(containers)),
 		}
-
-		isActive := func(ctr *container.Summary) bool {
-			return ctr.State == container.StateRunning ||
-				ctr.State == container.StatePaused ||
-				ctr.State == container.StateRestarting
-		}
-
-		activeCount := int64(len(containers))
-
-		du := &backend.ContainerDiskUsage{TotalCount: activeCount}
-		for _, ctr := range containers {
-			du.TotalSize += ctr.SizeRw
-			if !isActive(ctr) {
-				du.Reclaimable += ctr.SizeRw
-				activeCount--
+		for i := range containers {
+			du.TotalSize += containers[i].SizeRw
+			switch containers[i].State {
+			case container.StateRunning, container.StatePaused, container.StateRestarting:
+				// active
+			default:
+				du.Reclaimable += containers[i].SizeRw
+				du.ActiveCount--
 			}
-		}
 
-		du.ActiveCount = activeCount
+			// Remove image manifest descriptor from the result as it should not be included.
+			// https://github.com/moby/moby/pull/49407#discussion_r1954396666
+			containers[i].ImageManifestDescriptor = nil
+		}
 
 		if verbose {
 			du.Items = containers
@@ -62,7 +56,7 @@ func (daemon *Daemon) containerDiskUsage(ctx context.Context, verbose bool) (*ba
 // imageDiskUsage obtains information about image data disk usage from image service
 // and makes sure that only one calculation is performed at the same time.
 func (daemon *Daemon) imageDiskUsage(ctx context.Context, verbose bool) (*backend.ImageDiskUsage, error) {
-	du, _, err := daemon.usageImages.Do(ctx, struct{}{}, func(ctx context.Context) (*backend.ImageDiskUsage, error) {
+	du, _, err := daemon.usageImages.Do(ctx, verbose, func(ctx context.Context) (*backend.ImageDiskUsage, error) {
 		// Get all top images with extra attributes
 		images, err := daemon.imageService.Images(ctx, imagebackend.ListOptions{
 			Filters:    filters.NewArgs(),
@@ -72,28 +66,28 @@ func (daemon *Daemon) imageDiskUsage(ctx context.Context, verbose bool) (*backen
 			return nil, errors.Wrap(err, "failed to retrieve image list")
 		}
 
-		reclaimable, _, err := daemon.usageLayer.Do(ctx, struct{}{}, func(ctx context.Context) (int64, error) {
+		totalSize, _, err := daemon.usageLayer.Do(ctx, struct{}{}, func(ctx context.Context) (int64, error) {
 			return daemon.imageService.ImageDiskUsage(ctx)
 		})
 		if err != nil {
 			return nil, errors.Wrap(err, "failed to calculate image disk usage")
 		}
 
-		activeCount := int64(len(images))
-
-		du := &backend.ImageDiskUsage{TotalCount: activeCount, TotalSize: reclaimable}
+		du := &backend.ImageDiskUsage{
+			ActiveCount: int64(len(images)),
+			Reclaimable: totalSize,
+			TotalCount:  int64(len(images)),
+			TotalSize:   totalSize,
+		}
 		for _, i := range images {
 			if i.Containers == 0 {
-				activeCount--
+				du.ActiveCount--
 				if i.Size == -1 || i.SharedSize == -1 {
 					continue
 				}
-				reclaimable -= i.Size - i.SharedSize
+				du.Reclaimable -= i.Size - i.SharedSize
 			}
 		}
-
-		du.Reclaimable = reclaimable
-		du.ActiveCount = activeCount
 
 		if verbose {
 			du.Items = images
@@ -108,26 +102,25 @@ func (daemon *Daemon) imageDiskUsage(ctx context.Context, verbose bool) (*backen
 // localVolumesSize obtains information about volume disk usage from volumes service
 // and makes sure that only one size calculation is performed at the same time.
 func (daemon *Daemon) localVolumesSize(ctx context.Context, verbose bool) (*backend.VolumeDiskUsage, error) {
-	volumes, _, err := daemon.usageVolumes.Do(ctx, struct{}{}, func(ctx context.Context) (*backend.VolumeDiskUsage, error) {
+	volumes, _, err := daemon.usageVolumes.Do(ctx, verbose, func(ctx context.Context) (*backend.VolumeDiskUsage, error) {
 		volumes, err := daemon.volumes.LocalVolumesSize(ctx)
 		if err != nil {
 			return nil, err
 		}
 
-		activeCount := int64(len(volumes))
-
-		du := &backend.VolumeDiskUsage{TotalCount: activeCount}
+		du := &backend.VolumeDiskUsage{
+			ActiveCount: int64(len(volumes)),
+			TotalCount:  int64(len(volumes)),
+		}
 		for _, v := range volumes {
 			if v.UsageData.Size != -1 {
+				du.TotalSize += v.UsageData.Size
 				if v.UsageData.RefCount == 0 {
 					du.Reclaimable += v.UsageData.Size
-					activeCount--
+					du.ActiveCount--
 				}
-				du.TotalSize += v.UsageData.Size
 			}
 		}
-
-		du.ActiveCount = activeCount
 
 		if verbose {
 			du.Items = volumes

@@ -129,13 +129,17 @@ can take over 15 minutes to complete.
 
    ```none
    Successfully built 3d872560918e
-   docker run --rm -i --privileged -e BUILDFLAGS -e KEEPBUNDLE -e DOCKER_BUILD_GOGC -e DOCKER_BUILD_PKGS -e DOCKER_CLIENTONLY -e DOCKER_DEBUG -e DOCKER_EXPERIMENTAL -e DOCKER_GITCOMMIT -e DOCKER_GRAPHDRIVER=vfs -e DOCKER_REMAP_ROOT -e DOCKER_STORAGE_OPTS -e DOCKER_USERLANDPROXY -e TESTDIRS -e TESTFLAGS -e TIMEOUT -v "home/ubuntu/repos/docker/bundles:/go/src/github.com/docker/docker/bundles" -t "docker-dev" bash
+   docker run --rm -i --privileged -e BUILDFLAGS -e KEEPBUNDLE -e DOCKER_DEBUG -e DOCKER_EXPERIMENTAL -e DOCKER_GITCOMMIT -e DOCKER_GRAPHDRIVER=vfs -e DOCKER_REMAP_ROOT -e DOCKER_STORAGE_OPTS -e DOCKER_USERLANDPROXY -e TESTDIRS -e TESTFLAGS -e TIMEOUT -v "home/ubuntu/repos/docker/bundles:/go/src/github.com/docker/docker/bundles" -t "docker-dev" bash
    #
    ```
 
    At this point, your prompt reflects the container's BASH shell.
 
    Alternatively you can use the provided devcontainer in an IDE that supports them (VSCode, Goland, etc.)
+
+> **Note:** The `make shell` command creates an image tagged as `docker-dev:latest` by default.
+> It does not automatically tag the image with your current branch name, even if you are on a feature branch.
+> Some older documentation or examples may refer to a branch-specific tag, but that behavior is no longer used.
 
 5. List the contents of the current directory (`/go/src/github.com/docker/docker`).
 
@@ -212,13 +216,13 @@ can take over 15 minutes to complete.
    Notice the split versions between client and server, which might be
    unexpected. In more recent times the Docker CLI component (which provides the
    `docker` command) has split out from the Moby project and is now maintained in [docker/cli](https://github.com/docker/cli).
-   
+
    The Moby project now defaults to a [fixed
    version](https://github.com/docker/cli/commits/v17.06.0-ce) of the
    `docker` CLI for integration tests.
 
    You may have noticed the following message when starting the container with the `shell` command:
-   
+
    ```none
    Makefile:123: The docker client CLI has moved to github.com/docker/cli. For a dev-test cycle involving the CLI, run:
    DOCKER_CLI_PATH=/host/path/to/cli/binary make shell
@@ -330,7 +334,7 @@ example, you'll edit the help for the `attach` subcommand.
 
 8. Stop Docker if it is running.
 
-9. Copy the binaries to **/usr/bin** by entering the following commands in the docker development container shell.
+9. Copy the binaries to **/usr/local/bin** by entering the following commands in the docker development container shell.
 
    ```
    hack/make.sh binary install-binary

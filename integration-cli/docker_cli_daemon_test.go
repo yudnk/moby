@@ -178,7 +178,7 @@ func (s *DockerDaemonSuite) TestDaemonRestartOnFailure(c *testing.T) {
 
 	// wait test1 to stop
 	hostArgs := []string{"--host", s.d.Sock()}
-	err = daemon.WaitInspectWithArgs(dockerBinary, "test1", "{{.State.Running}} {{.State.Restarting}}", "false false", 10*time.Second, hostArgs...)
+	err = daemon.WaitInspectWithArgs(dockerBinary, "test1", "{{.State.Running}} {{.State.Restarting}}", "false false", 10*time.Second, hostArgs...) //nolint:staticcheck // TODO WaitInspectWithArgs is deprecated.
 	assert.NilError(c, err, "test1 should exit but not")
 
 	// record last start time
@@ -189,7 +189,7 @@ func (s *DockerDaemonSuite) TestDaemonRestartOnFailure(c *testing.T) {
 	s.d.Restart(c)
 
 	// test1 shouldn't restart at all
-	err = daemon.WaitInspectWithArgs(dockerBinary, "test1", "{{.State.Running}} {{.State.Restarting}}", "false false", 0, hostArgs...)
+	err = daemon.WaitInspectWithArgs(dockerBinary, "test1", "{{.State.Running}} {{.State.Restarting}}", "false false", 0, hostArgs...) //nolint:staticcheck // TODO WaitInspectWithArgs is deprecated.
 	assert.NilError(c, err, "test1 should exit but not")
 
 	// make sure test1 isn't restarted when daemon restart
@@ -1052,6 +1052,8 @@ func (s *DockerDaemonSuite) TestBridgeIPIsExcludedFromAllocatorPool(c *testing.T
 	s.d.StartWithBusybox(testutil.GetContext(c), c, "--bip", bridgeRange)
 	defer s.d.Restart(c)
 
+	apiClient := s.d.NewClientT(c)
+
 	var cont int
 	for {
 		contName := fmt.Sprintf("container%d", cont)
@@ -1060,9 +1062,14 @@ func (s *DockerDaemonSuite) TestBridgeIPIsExcludedFromAllocatorPool(c *testing.T
 			// pool exhausted
 			break
 		}
-		ip, err := s.d.Cmd("inspect", "--format", "'{{.NetworkSettings.IPAddress}}'", contName)
-		assert.Assert(c, err == nil, ip)
 
+		res, err := apiClient.ContainerInspect(c.Context(), contName, client.ContainerInspectOptions{})
+		assert.NilError(c, err)
+
+		assert.Check(c, res.Container.NetworkSettings != nil)
+		assert.Check(c, res.Container.NetworkSettings.Networks["bridge"] != nil)
+		ip := res.Container.NetworkSettings.Networks["bridge"].IPAddress.String()
+		assert.Assert(c, err == nil, ip)
 		assert.Assert(c, ip != bridgeIP)
 		cont++
 	}
@@ -1120,7 +1127,7 @@ func (s *DockerDaemonSuite) TestDaemonRestartContainerLinksRestart(c *testing.T)
 	maxChildren := 10
 	chErr := make(chan error, maxChildren)
 
-	for i := 0; i < maxChildren; i++ {
+	for i := range maxChildren {
 		wg.Add(1)
 		name := fmt.Sprintf("test%d", i)
 
@@ -2118,7 +2125,7 @@ func (s *DockerDaemonSuite) TestShmSizeReload(c *testing.T) {
 	configFile := filepath.Join(configPath, "config.json")
 
 	size := 67108864 * 2
-	configData := []byte(fmt.Sprintf(`{"default-shm-size": "%dM"}`, size/1024/1024))
+	configData := fmt.Appendf(nil, `{"default-shm-size": "%dM"}`, size/1024/1024)
 	assert.Assert(c, os.WriteFile(configFile, configData, 0o666) == nil, "could not write temp file for config reload")
 	pattern := regexp.MustCompile(fmt.Sprintf("shm on /dev/shm type tmpfs(.*)size=%dk", size/1024))
 
@@ -2133,7 +2140,7 @@ func (s *DockerDaemonSuite) TestShmSizeReload(c *testing.T) {
 	assert.Equal(c, strings.TrimSpace(out), fmt.Sprintf("%v", size))
 
 	size = 67108864 * 3
-	configData = []byte(fmt.Sprintf(`{"default-shm-size": "%dM"}`, size/1024/1024))
+	configData = fmt.Appendf(nil, `{"default-shm-size": "%dM"}`, size/1024/1024)
 	assert.Assert(c, os.WriteFile(configFile, configData, 0o666) == nil, "could not write temp file for config reload")
 	pattern = regexp.MustCompile(fmt.Sprintf("shm on /dev/shm type tmpfs(.*)size=%dk", size/1024))
 

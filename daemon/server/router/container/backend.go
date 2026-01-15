@@ -53,7 +53,7 @@ type monitorBackend interface {
 	ContainerLogs(ctx context.Context, name string, config *backend.ContainerLogsOptions) (msgs <-chan *backend.LogMessage, tty bool, err error)
 	ContainerStats(ctx context.Context, name string, config *backend.ContainerStatsConfig) error
 	ContainerTop(name string, psArgs string) (*container.TopResponse, error)
-	Containers(ctx context.Context, config *backend.ContainerListOptions) ([]*container.Summary, error)
+	Containers(ctx context.Context, config *backend.ContainerListOptions) ([]container.Summary, error)
 }
 
 // attachBackend includes function to implement to provide container attaching functionality.
@@ -63,7 +63,7 @@ type attachBackend interface {
 
 // systemBackend includes functions to implement to provide system wide containers functionality
 type systemBackend interface {
-	ContainersPrune(ctx context.Context, pruneFilters filters.Args) (*container.PruneReport, error)
+	ContainerPrune(ctx context.Context, pruneFilters filters.Args) (*container.PruneReport, error)
 }
 
 type commitBackend interface {

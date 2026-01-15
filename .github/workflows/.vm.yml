@@ -20,8 +20,9 @@ on:
         type: string
 
 env:
-  GO_VERSION: "1.25.3"
+  GO_VERSION: "1.25.5"
   TESTSTAT_VERSION: v0.1.25
+  TEMPLATE_NAME: ${{ inputs.template }}
 
 jobs:
   integration:
@@ -39,11 +40,13 @@ jobs:
     steps:
       -
         name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
       -
         name: Set up Lima
         uses: lima-vm/lima-actions/setup@03b96d61959e83b2c737e44162c3088e81de0886  # v1.0.1
         id: lima-actions-setup
+        with:
+          version: v2.0.2
       -
         name: Cache ~/.cache/lima
         uses: actions/cache@v4
@@ -145,7 +148,8 @@ jobs:
         run: |
           set -eux -o pipefail
           limactl cp -v -r default:/tmp/docker/bundles . || true
-          reportsName="$(basename ${{ inputs.template }})"
+          reportsName="${{ env.TEMPLATE_NAME }}"
+          reportsName="${reportsName#template:}"
           if [ -n "${{ matrix.mode }}" ]; then
             reportsName="$reportsName-${{ matrix.mode }}"
           fi
@@ -165,7 +169,7 @@ jobs:
       -
         name: Upload reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: test-reports-integration-${{ env.TESTREPORTS_NAME }}
           path: /tmp/reports/*
@@ -181,16 +185,19 @@ jobs:
     steps:
       -
         name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: false
       -
         name: Prepare reports
-        run: echo "TESTREPORTS_NAME=$(basename ${{ inputs.template }})*" >> $GITHUB_ENV
+        run: |
+          TEMPLATE="${{ env.TEMPLATE_NAME }}"
+          TEMPLATE="${TEMPLATE#template:}"
+          echo "TESTREPORTS_NAME=${TEMPLATE}*" >> $GITHUB_ENV
       -
         name: Download reports
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           path: /tmp/reports
           pattern: test-reports-integration-${{ env.TESTREPORTS_NAME }}

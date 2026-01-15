@@ -33,10 +33,10 @@ type ImageService interface {
 	ImageDelete(ctx context.Context, imageRef string, options imagebackend.RemoveOptions) ([]imagetype.DeleteResponse, error)
 	ExportImage(ctx context.Context, names []string, platformList []ocispec.Platform, outStream io.Writer) error
 	LoadImage(ctx context.Context, inTar io.ReadCloser, platformList []ocispec.Platform, outStream io.Writer, quiet bool) error
-	Images(ctx context.Context, opts imagebackend.ListOptions) ([]*imagetype.Summary, error)
+	Images(ctx context.Context, opts imagebackend.ListOptions) ([]imagetype.Summary, error)
 	LogImageEvent(ctx context.Context, imageID, refName string, action events.Action)
 	CountImages(ctx context.Context) int
-	ImagesPrune(ctx context.Context, pruneFilters filters.Args) (*imagetype.PruneReport, error)
+	ImagePrune(ctx context.Context, pruneFilters filters.Args) (*imagetype.PruneReport, error)
 	ImportImage(ctx context.Context, ref reference.Named, platform *ocispec.Platform, msg string, layerReader io.Reader, changes []string) (image.ID, error)
 	TagImage(ctx context.Context, imageID image.ID, newTag reference.Named) error
 	GetImage(ctx context.Context, refOrID string, options imagebackend.GetImageOpts) (*image.Image, error)

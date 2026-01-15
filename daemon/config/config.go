@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	stderrors "errors"
 	"fmt"
+	"maps"
 	"net"
 	"net/netip"
 	"net/url"
@@ -58,7 +59,7 @@ const (
 	// MaxAPIVersion is the highest REST API version supported by the daemon.
 	//
 	// This version may be lower than the version of the api library module used.
-	MaxAPIVersion = "1.52"
+	MaxAPIVersion = "1.53"
 	// defaultMinAPIVersion is the minimum API version supported by the API.
 	// This version can be overridden through the "DOCKER_MIN_API_VERSION"
 	// environment variable. The minimum allowed version is determined
@@ -88,6 +89,7 @@ var flatOptions = map[string]bool{
 	"default-ulimits":      true,
 	"features":             true,
 	"builder":              true,
+	"nri-opts":             true,
 }
 
 // skipValidateOptions contains configuration keys
@@ -185,10 +187,11 @@ type DNSConfig struct {
 // It includes json tags to deserialize configuration from a file
 // using the same names that the flags in the command line use.
 type CommonConfig struct {
-	AuthorizationPlugins  []string `json:"authorization-plugins,omitempty"` // AuthorizationPlugins holds list of authorization plugins
-	AutoRestart           bool     `json:"-"`
-	DisableBridge         bool     `json:"-"`
-	ExecOptions           []string `json:"exec-opts,omitempty"`
+	AuthorizationPlugins []string `json:"authorization-plugins,omitempty"` // AuthorizationPlugins holds list of authorization plugins
+	AutoRestart          bool     `json:"-"`
+	DisableBridge        bool     `json:"-"`
+	ExecOptions          []string `json:"exec-opts,omitempty"`
+	// TODO: Should be renamed to StorageDriver
 	GraphDriver           string   `json:"storage-driver,omitempty"`
 	GraphOptions          []string `json:"storage-opts,omitempty"`
 	Labels                []string `json:"labels,omitempty"`
@@ -282,6 +285,9 @@ type CommonConfig struct {
 
 	// CDISpecDirs is a list of directories in which CDI specifications can be found.
 	CDISpecDirs []string `json:"cdi-spec-dirs,omitempty"`
+
+	// NRIOpts defines configuration for NRI (Node Resource Interface).
+	NRIOpts opts.NRIOpts `json:"nri-opts,omitempty"`
 
 	// The minimum API version provided by the daemon. Defaults to [defaultMinAPIVersion].
 	//
@@ -582,9 +588,7 @@ func configValuesSet(config map[string]any) map[string]any {
 	flatten := make(map[string]any)
 	for k, v := range config {
 		if m, isMap := v.(map[string]any); isMap && !flatOptions[k] {
-			for km, vm := range m {
-				flatten[km] = vm
-			}
+			maps.Copy(flatten, m)
 			continue
 		}
 
@@ -824,7 +828,7 @@ func migrateHostGatewayIP(config *Config) {
 	hgip := config.HostGatewayIP //nolint:staticcheck // ignore SA1019: migrating to HostGatewayIPs.
 	if hgip != nil {
 		addr, _ := netip.AddrFromSlice(hgip)
-		config.HostGatewayIPs = []netip.Addr{addr}
+		config.HostGatewayIPs = []netip.Addr{addr.Unmap()}
 		config.HostGatewayIP = nil //nolint:staticcheck // ignore SA1019: clearing old value.
 	}
 }

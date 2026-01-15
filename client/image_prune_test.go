@@ -1,7 +1,6 @@
 package client
 
 import (
-	"context"
 	"net/http"
 	"testing"
 
@@ -12,15 +11,15 @@ import (
 	is "gotest.tools/v3/assert/cmp"
 )
 
-func TestImagesPruneError(t *testing.T) {
+func TestImagePruneError(t *testing.T) {
 	client, err := New(WithMockClient(errorMock(http.StatusInternalServerError, "Server error")))
 	assert.NilError(t, err)
 
-	_, err = client.ImagesPrune(context.Background(), ImagePruneOptions{})
+	_, err = client.ImagePrune(t.Context(), ImagePruneOptions{})
 	assert.Check(t, is.ErrorType(err, cerrdefs.IsInternal))
 }
 
-func TestImagesPrune(t *testing.T) {
+func TestImagePrune(t *testing.T) {
 	const expectedURL = "/images/prune"
 
 	listCases := []struct {
@@ -83,7 +82,7 @@ func TestImagesPrune(t *testing.T) {
 		}))
 		assert.NilError(t, err)
 
-		res, err := client.ImagesPrune(context.Background(), ImagePruneOptions{Filters: listCase.filters})
+		res, err := client.ImagePrune(t.Context(), ImagePruneOptions{Filters: listCase.filters})
 		assert.NilError(t, err)
 		assert.Check(t, is.Len(res.Report.ImagesDeleted, 2))
 		assert.Check(t, is.Equal(uint64(9999), res.Report.SpaceReclaimed))

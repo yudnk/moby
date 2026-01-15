@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -70,12 +71,10 @@ func setupContainerWithName(t *testing.T, name string, daemon *Daemon) *containe
 	return c
 }
 
-func containerListContainsName(containers []*containertypes.Summary, name string) bool {
+func containerListContainsName(containers []containertypes.Summary, name string) bool {
 	for _, ctr := range containers {
-		for _, containerName := range ctr.Names {
-			if containerName == name {
-				return true
-			}
+		if slices.Contains(ctr.Names, name) {
+			return true
 		}
 	}
 

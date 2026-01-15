@@ -30,6 +30,7 @@ import (
 	"github.com/moby/buildkit/frontend/dockerfile/parser"
 	"github.com/moby/buildkit/frontend/dockerfile/shell"
 	"github.com/moby/buildkit/frontend/dockerui"
+	"github.com/moby/buildkit/frontend/subrequests/convertllb"
 	"github.com/moby/buildkit/frontend/subrequests/lint"
 	"github.com/moby/buildkit/frontend/subrequests/outline"
 	"github.com/moby/buildkit/frontend/subrequests/targets"
@@ -123,6 +124,14 @@ func Dockerfile2Outline(ctx context.Context, dt []byte, opt ConvertOpt) (*outlin
 	return &o, nil
 }
 
+func DockerfileConvertLLB(ctx context.Context, dt []byte, opt ConvertOpt) (*convertllb.Result, error) {
+	ds, err := toDispatchState(ctx, dt, opt)
+	if err != nil {
+		return nil, err
+	}
+	return ds.ConvertLLB(ctx)
+}
+
 func DockerfileLint(ctx context.Context, dt []byte, opt ConvertOpt) (*lint.LintResults, error) {
 	results := &lint.LintResults{}
 	sourceIndex := results.AddSource(opt.SourceMap)
@@ -168,7 +177,7 @@ func ListTargets(ctx context.Context, dt []byte) (*targets.List, error) {
 	for i, s := range stages {
 		t := targets.Target{
 			Name:        s.Name,
-			Description: s.Comment,
+			Description: s.DocComment,
 			Default:     i == len(stages)-1,
 			Base:        s.BaseName,
 			Platform:    s.Platform,
@@ -287,6 +296,8 @@ func toDispatchState(ctx context.Context, dt []byte, opt ConvertOpt) (*dispatchS
 
 	// set base state for every image
 	for i, st := range stages {
+		lint := lint.WithMergedConfigFromComments(st.Comments)
+
 		nameMatch, err := shlex.ProcessWordWithMatches(st.BaseName, globalArgs)
 		argKeys := unusedFromArgsCheckKeys(globalArgs, outline.allArgs)
 		reportUnusedFromArgs(argKeys, nameMatch.Unmatched, st.Location, lint)
@@ -532,9 +543,9 @@ func toDispatchState(ctx context.Context, dt []byte, opt ConvertOpt) (*dispatchS
 							}
 							prefix += "internal]"
 							mutRef, dgst, dt, err := metaResolver.ResolveImageConfig(ctx, d.stage.BaseName, sourceresolver.Opt{
-								LogName:  fmt.Sprintf("%s load metadata for %s", prefix, d.stage.BaseName),
-								Platform: platform,
+								LogName: fmt.Sprintf("%s load metadata for %s", prefix, d.stage.BaseName),
 								ImageOpt: &sourceresolver.ResolveImageOpt{
+									Platform:    platform,
 									ResolveMode: opt.ImageResolveMode.String(),
 								},
 							})
@@ -905,6 +916,8 @@ func (e *envsFromState) Keys() []string {
 }
 
 func dispatch(d *dispatchState, cmd command, opt dispatchOpt) error {
+	opt.lint = opt.lint.WithMergedConfigFromComments(cmd.Comments())
+
 	d.cmdIsOnBuild = cmd.isOnBuild
 	var err error
 	// ARG command value could be ignored, so defer handling the expansion error
@@ -1223,14 +1236,19 @@ func dispatchRun(d *dispatchState, c *instructions.RunCommand, proxy *llb.ProxyE
 	// Run command can potentially access any file. Mark the full filesystem as used.
 	d.paths["/"] = struct{}{}
 
-	var args = c.CmdLine
+	args := c.CmdLine
 	if len(c.Files) > 0 {
 		if len(args) != 1 || !c.PrependShell {
 			return errors.Errorf("parsing produced an invalid run command: %v", args)
 		}
 
 		if heredoc := parser.MustParseHeredoc(args[0]); heredoc != nil {
-			if d.image.OS != "windows" && strings.HasPrefix(c.Files[0].Data, "#!") {
+			data := c.Files[0].Data
+			if c.Files[0].Chomp {
+				data = parser.ChompHeredocContent(data)
+			}
+
+			if d.image.OS != "windows" && strings.HasPrefix(data, "#!") {
 				// This is a single heredoc with a shebang, so create a file
 				// and run it.
 				// NOTE: choosing to expand doesn't really make sense here, so
@@ -1239,10 +1257,6 @@ func dispatchRun(d *dispatchState, c *instructions.RunCommand, proxy *llb.ProxyE
 				destPath := "/dev/pipes/"
 
 				f := c.Files[0].Name
-				data := c.Files[0].Data
-				if c.Files[0].Chomp {
-					data = parser.ChompHeredocContent(data)
-				}
 				st := llb.Scratch().Dir(sourcePath).File(
 					llb.Mkfile(f, 0755, []byte(data)),
 					dockerui.WithInternalName("preparing inline document"),
@@ -1259,10 +1273,6 @@ func dispatchRun(d *dispatchState, c *instructions.RunCommand, proxy *llb.ProxyE
 				// the syntax can still be used for shells that don't support
 				// heredocs directly.
 				// NOTE: like above, we ignore the expand option.
-				data := c.Files[0].Data
-				if c.Files[0].Chomp {
-					data = parser.ChompHeredocContent(data)
-				}
 				args = []string{data}
 			}
 			customname += fmt.Sprintf(" (%s)", summarizeHeredoc(c.Files[0].Data))
@@ -1606,6 +1616,7 @@ func dispatchCopy(d *dispatchState, cfg copyConfig) error {
 		} else {
 			validateCopySourcePath(src, &cfg)
 			var patterns []string
+			var requiredPaths []string
 			if cfg.parents {
 				// detect optional pivot point
 				parent, pattern, ok := strings.Cut(src, "/./")
@@ -1622,11 +1633,25 @@ func dispatchCopy(d *dispatchState, cfg copyConfig) error {
 				}
 
 				patterns = []string{strings.TrimPrefix(pattern, "/")}
+
+				// determine if we want to require any paths to exist.
+				// we only require a path to exist if wildcards aren't present.
+				if !containsWildcards(src) && !containsWildcards(pattern) {
+					requiredPaths = []string{filepath.Join(src, pattern)}
+				}
 			}
 
 			src, err = system.NormalizePath("/", src, d.platform.OS, false)
 			if err != nil {
 				return errors.Wrap(err, "removing drive letter")
+			}
+
+			for i, requiredPath := range requiredPaths {
+				p, err := system.NormalizePath("/", requiredPath, d.platform.OS, false)
+				if err != nil {
+					return errors.Wrap(err, "removing drive letter")
+				}
+				requiredPaths[i] = p
 			}
 
 			unpack := cfg.isAddCommand
@@ -1639,6 +1664,7 @@ func dispatchCopy(d *dispatchState, cfg copyConfig) error {
 				FollowSymlinks:      true,
 				CopyDirContentsOnly: true,
 				IncludePatterns:     patterns,
+				RequiredPaths:       requiredPaths,
 				AttemptUnpack:       unpack,
 				CreateDestPath:      true,
 				AllowWildcard:       true,
@@ -1760,7 +1786,7 @@ func dispatchOnbuild(d *dispatchState, c *instructions.OnbuildCommand) error {
 func dispatchCmd(d *dispatchState, c *instructions.CmdCommand, lint *linter.Linter) error {
 	validateUsedOnce(c, &d.cmd, lint)
 
-	var args = c.CmdLine
+	args := c.CmdLine
 	if c.PrependShell {
 		if len(d.image.Config.Shell) == 0 {
 			msg := linter.RuleJSONArgsRecommended.Format(c.Name())
@@ -1776,7 +1802,7 @@ func dispatchCmd(d *dispatchState, c *instructions.CmdCommand, lint *linter.Lint
 func dispatchEntrypoint(d *dispatchState, c *instructions.EntrypointCommand, lint *linter.Linter) error {
 	validateUsedOnce(c, &d.entrypoint, lint)
 
-	var args = c.CmdLine
+	args := c.CmdLine
 	if c.PrependShell {
 		if len(d.image.Config.Shell) == 0 {
 			msg := linter.RuleJSONArgsRecommended.Format(c.Name())
@@ -2020,6 +2046,7 @@ func validateCopySourcePath(src string, cfg *copyConfig) error {
 		cmd = "Add"
 	}
 
+	src = filepath.ToSlash(filepath.Clean(src))
 	ok, err := cfg.ignoreMatcher.MatchesOrParentMatches(src)
 	if err != nil {
 		return err
@@ -2691,4 +2718,16 @@ func (emptyEnvs) Get(string) (string, bool) {
 
 func (emptyEnvs) Keys() []string {
 	return nil
+}
+
+func containsWildcards(name string) bool {
+	for i := 0; i < len(name); i++ {
+		switch name[i] {
+		case '*', '?', '[':
+			return true
+		case '\\':
+			i++
+		}
+	}
+	return false
 }
