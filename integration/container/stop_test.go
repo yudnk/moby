@@ -120,42 +120,53 @@ func TestContainerAPIPostContainerStop(t *testing.T) {
 	ctx := setupTest(t)
 
 	tests := []struct {
-		testName  string
-		id        string
-		expStatus int
-		expError  string
+		testName            string
+		id                  string
+		expStatusCode       int
+		expError            string
+		checkContainerState bool
+		expStateRunning     bool
 	}{
 		{
-			testName:  "no error",
-			id:        container.Run(ctx, t, apiClient),
-			expStatus: http.StatusNoContent,
+			testName:            "no error",
+			id:                  container.Run(ctx, t, apiClient),
+			expStatusCode:       http.StatusNoContent,
+			checkContainerState: true,
+			expStateRunning:     false,
 		},
 		{
-			testName:  "container already stopped",
-			id:        container.Create(ctx, t, apiClient),
-			expStatus: http.StatusNotModified,
+			testName:            "container already stopped",
+			id:                  container.Create(ctx, t, apiClient),
+			expStatusCode:       http.StatusNotModified,
+			checkContainerState: true,
+			expStateRunning:     false,
 		},
 		{
-			testName:  "no such container",
-			id:        "test1234",
-			expStatus: http.StatusNotFound,
-			expError:  `No such container: test1234`,
+			testName:            "no such container",
+			id:                  "test1234",
+			expStatusCode:       http.StatusNotFound,
+			expError:            `No such container: test1234`,
+			checkContainerState: false,
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.testName, func(t *testing.T) {
-			endpoint := "/containers/" + tc.id + "/stop"
 
-			res, _, err := request.Post(ctx, endpoint)
+			res, _, err := request.Post(ctx, "/containers/"+tc.id+"/stop")
 
-			assert.Equal(t, res.StatusCode, tc.expStatus)
+			assert.Equal(t, res.StatusCode, tc.expStatusCode)
 			assert.NilError(t, err)
 
 			if tc.expError != "" {
 				var respErr common.ErrorResponse
 				assert.NilError(t, request.ReadJSONResponse(res, &respErr))
 				assert.ErrorContains(t, respErr, tc.expError)
+			}
+
+			if tc.checkContainerState {
+				inspectRes := container.Inspect(ctx, t, apiClient, tc.id)
+				assert.Equal(t, inspectRes.State.Running, tc.expStateRunning)
 			}
 		})
 	}
